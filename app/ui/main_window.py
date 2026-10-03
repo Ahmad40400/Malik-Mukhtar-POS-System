@@ -463,8 +463,7 @@ class CheckoutDialog(QDialog):
             QPushButton {
                 background: #FFFFFF; color: #0F172A;
                 border: 2px solid #E2E8F0; border-radius: 10px;
-                font-size: 14px; font-weight: 700;
-                padding: 12px 20px;
+                font-size: 14px; font-weight: 700; padding: 12px 20px;
             }
             QPushButton:hover { background: #F8FAFC; border-color: #94A3B8; }
         """)
@@ -486,7 +485,6 @@ class CheckoutDialog(QDialog):
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #059669, stop:1 #047857);
             }
-            QPushButton:pressed { background: #047857; }
         """)
         complete.clicked.connect(self._complete)
         fl.addWidget(complete, 1)
@@ -975,7 +973,6 @@ class POSWidget(QWidget):
                 item.widget().deleteLater()
 
     def _get_price_for_qty(self, product, qty):
-        """Return (price, is_wholesale) based on quantity"""
         if (product.wholesale_price > 0 and
                 product.wholesale_min_qty > 0 and
                 qty >= product.wholesale_min_qty):
@@ -991,7 +988,6 @@ class POSWidget(QWidget):
                 QMessageBox.warning(self, "Out of Stock", f"{p.name} is out of stock.")
                 return
 
-            # Check if exists in cart
             for x in self.cart:
                 if x["id"] == pid:
                     new_qty = x["qty"] + 1
@@ -1000,20 +996,16 @@ class POSWidget(QWidget):
                                             f"Only {p.stock_quantity:.0f} units available.")
                         return
                     x["qty"] = new_qty
-                    # Recalculate price based on new qty
                     new_price, is_whole = self._get_price_for_qty(p, new_qty)
                     x["price"] = new_price
                     x["is_wholesale"] = is_whole
                     self.render_cart()
                     return
 
-            # New item
             price, is_whole = self._get_price_for_qty(p, 1)
             self.cart.append({
-                "id": p.id,
-                "name": p.name,
-                "price": price,
-                "qty": 1,
+                "id": p.id, "name": p.name,
+                "price": price, "qty": 1,
                 "is_wholesale": is_whole,
             })
         self.render_cart()
@@ -1060,7 +1052,6 @@ class POSWidget(QWidget):
                                                 f"Only {max_stock:.0f} units available.")
                             return
                         x["qty"] = new_qty
-                        # Recalculate price
                         new_price, is_whole = self._get_price_for_qty(p, new_qty)
                         x["price"] = new_price
                         x["is_wholesale"] = is_whole
@@ -1237,52 +1228,159 @@ class POSWidget(QWidget):
 
 
 # =========================================================
-# PRODUCTS PAGE (with Wholesale fields)
+# PRODUCTS PAGE (with proper Edit/Delete buttons + Bulk Delete + Select All)
 # =========================================================
 class ProductsWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self.selected_ids = set()
+        self.all_checkboxes = {}
+
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 22, 24, 22)
         root.setSpacing(14)
 
+        # HEADER
         header = QHBoxLayout()
         title = QLabel("Products")
         title.setStyleSheet("font-size: 22px; font-weight: 900; color: #0F172A;")
         header.addWidget(title)
+
+        self.count_lbl = QLabel("")
+        self.count_lbl.setStyleSheet("color: #64748B; font-size: 13px; font-weight: 600; padding-left: 12px;")
+        header.addWidget(self.count_lbl)
         header.addStretch()
 
+        self.selected_lbl = QLabel("")
+        self.selected_lbl.setStyleSheet("""
+            color: #4F46E5;
+            font-size: 13px;
+            font-weight: 700;
+            padding: 8px 14px;
+            background: #EEF2FF;
+            border-radius: 6px;
+        """)
+        self.selected_lbl.setVisible(False)
+        header.addWidget(self.selected_lbl)
+
+        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn.setFixedHeight(40)
+        self.select_all_btn.setCursor(Qt.PointingHandCursor)
+        self.select_all_btn.setVisible(False)
+        self.select_all_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                color: #4F46E5;
+                border: 2px solid #4F46E5;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 8px 16px;
+            }
+            QPushButton:hover { background: #EEF2FF; }
+        """)
+        self.select_all_btn.clicked.connect(self.select_all)
+        header.addWidget(self.select_all_btn)
+
+        self.clear_sel_btn = QPushButton("Clear")
+        self.clear_sel_btn.setFixedHeight(40)
+        self.clear_sel_btn.setCursor(Qt.PointingHandCursor)
+        self.clear_sel_btn.setVisible(False)
+        self.clear_sel_btn.setStyleSheet("""
+            QPushButton {
+                background: #FFFFFF;
+                color: #64748B;
+                border: 2px solid #E2E8F0;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 8px 16px;
+            }
+            QPushButton:hover {
+                background: #F8FAFC;
+                border-color: #94A3B8;
+            }
+        """)
+        self.clear_sel_btn.clicked.connect(self.clear_selection)
+        header.addWidget(self.clear_sel_btn)
+
+        self.bulk_delete_btn = QPushButton("Delete Selected")
+        self.bulk_delete_btn.setFixedHeight(40)
+        self.bulk_delete_btn.setCursor(Qt.PointingHandCursor)
+        self.bulk_delete_btn.setVisible(False)
+        self.bulk_delete_btn.setStyleSheet("""
+            QPushButton {
+                background: #DC2626;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 700;
+                padding: 8px 18px;
+            }
+            QPushButton:hover { background: #B91C1C; }
+        """)
+        self.bulk_delete_btn.clicked.connect(self.bulk_delete)
+        header.addWidget(self.bulk_delete_btn)
+
         add = QPushButton("+ Add Product")
+        add.setFixedHeight(40)
         add.setCursor(Qt.PointingHandCursor)
         add.clicked.connect(self.add)
         header.addWidget(add)
 
         imp = QPushButton("Import")
         imp.setProperty("variant", "secondary")
+        imp.setFixedHeight(40)
+        imp.setCursor(Qt.PointingHandCursor)
         imp.clicked.connect(self.import_file)
         header.addWidget(imp)
 
         exp = QPushButton("Export")
         exp.setProperty("variant", "secondary")
+        exp.setFixedHeight(40)
+        exp.setCursor(Qt.PointingHandCursor)
         exp.clicked.connect(self.export_file)
         header.addWidget(exp)
+
         root.addLayout(header)
 
+        # SEARCH
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Search products by name, barcode, or SKU...")
+        self.search.setPlaceholderText("🔍  Search products by name, barcode, or SKU...")
         self.search.setFixedHeight(44)
         self.search.textChanged.connect(self.load)
         root.addWidget(self.search)
 
-        self.table = QTableWidget(0, 10)
-        self.table.setHorizontalHeaderLabels(
-            ["ID", "PRODUCT", "BARCODE", "SKU", "BUY", "RETAIL", "WHOLESALE", "W. QTY", "STOCK", "MIN"]
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        # TABLE
+        self.table = QTableWidget(0, 12)
+        self.table.setHorizontalHeaderLabels([
+            "SELECT", "ID", "PRODUCT", "BARCODE", "SKU",
+            "BUY", "RETAIL", "WHOLESALE", "W. QTY",
+            "STOCK", "MIN", "ACTIONS"
+        ])
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.NoSelection)
+        self.table.setFocusPolicy(Qt.NoFocus)
+
+        self.table.setColumnWidth(0, 70)
+        self.table.setColumnWidth(1, 55)
+        self.table.setColumnWidth(2, 200)
+        self.table.setColumnWidth(3, 100)
+        self.table.setColumnWidth(4, 100)
+        self.table.setColumnWidth(5, 90)
+        self.table.setColumnWidth(6, 90)
+        self.table.setColumnWidth(7, 100)
+        self.table.setColumnWidth(8, 70)
+        self.table.setColumnWidth(9, 70)
+        self.table.setColumnWidth(10, 60)
+        self.table.setColumnWidth(11, 160)
+
         root.addWidget(self.table, 1)
+
         self.load()
 
     def load(self):
@@ -1298,44 +1396,501 @@ class ProductsWidget(QWidget):
             ps = query.limit(2000).all()
 
         self.table.setRowCount(0)
+        self.selected_ids.clear()
+        self.all_checkboxes.clear()
+        self._update_bulk_bar()
+
         for p in ps:
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setRowHeight(r, 46)
-            wprice = money(p.wholesale_price) if p.wholesale_price > 0 else "—"
-            wqty = f"{p.wholesale_min_qty:.0f}+" if p.wholesale_min_qty > 0 else "—"
-            vals = [
-                str(p.id), p.name, p.barcode, p.sku,
-                money(p.purchase_price), money(p.selling_price),
-                wprice, wqty,
-                f"{p.stock_quantity:.0f}", f"{p.minimum_stock:.0f}"
-            ]
-            for c, v in enumerate(vals):
-                item = QTableWidgetItem(v)
-                if c == 8:  # Stock
-                    if p.stock_quantity <= 0:
-                        item.setForeground(QColor("#DC2626"))
-                    elif p.stock_quantity <= p.minimum_stock:
-                        item.setForeground(QColor("#D97706"))
-                    else:
-                        item.setForeground(QColor("#059669"))
-                if c == 6 and p.wholesale_price > 0:
-                    item.setForeground(QColor("#059669"))
-                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
-                self.table.setItem(r, c, item)
+            self.table.setRowHeight(r, 56)
 
-    def add(self):
+            # CHECKBOX
+            cb_widget = QWidget()
+            cb_layout = QHBoxLayout(cb_widget)
+            cb_layout.setContentsMargins(0, 0, 0, 0)
+            cb_layout.setAlignment(Qt.AlignCenter)
+
+            cb = QCheckBox()
+            cb.setCursor(Qt.PointingHandCursor)
+            cb.setStyleSheet("""
+                QCheckBox::indicator {
+                    width: 20px;
+                    height: 20px;
+                    border: 2px solid #CBD5E1;
+                    border-radius: 5px;
+                    background: #FFFFFF;
+                }
+                QCheckBox::indicator:hover {
+                    border: 2px solid #4F46E5;
+                }
+                QCheckBox::indicator:checked {
+                    background: #4F46E5;
+                    border: 2px solid #4F46E5;
+                }
+            """)
+            cb.stateChanged.connect(lambda state, pid=p.id: self._on_row_check(state, pid))
+            cb_layout.addWidget(cb)
+            self.table.setCellWidget(r, 0, cb_widget)
+            self.all_checkboxes[p.id] = cb
+
+            # ID
+            id_item = QTableWidgetItem(str(p.id))
+            id_item.setTextAlignment(Qt.AlignCenter)
+            id_item.setForeground(QColor("#64748B"))
+            self.table.setItem(r, 1, id_item)
+
+            # Product Name
+            name_item = QTableWidgetItem(p.name)
+            fnt = name_item.font()
+            fnt.setBold(True)
+            name_item.setFont(fnt)
+            self.table.setItem(r, 2, name_item)
+
+            # Barcode
+            self.table.setItem(r, 3, QTableWidgetItem(p.barcode or "—"))
+
+            # SKU
+            sku_item = QTableWidgetItem(p.sku or "—")
+            sku_item.setForeground(QColor("#64748B"))
+            self.table.setItem(r, 4, sku_item)
+
+            # Buy
+            self.table.setItem(r, 5, QTableWidgetItem(money(p.purchase_price)))
+
+            # Retail
+            retail_item = QTableWidgetItem(money(p.selling_price))
+            retail_item.setForeground(QColor("#0F172A"))
+            fnt2 = retail_item.font()
+            fnt2.setBold(True)
+            retail_item.setFont(fnt2)
+            self.table.setItem(r, 6, retail_item)
+
+            # Wholesale
+            if p.wholesale_price > 0:
+                w_item = QTableWidgetItem(money(p.wholesale_price))
+                w_item.setForeground(QColor("#059669"))
+                fnt3 = w_item.font()
+                fnt3.setBold(True)
+                w_item.setFont(fnt3)
+                self.table.setItem(r, 7, w_item)
+            else:
+                w_item = QTableWidgetItem("—")
+                w_item.setForeground(QColor("#94A3B8"))
+                w_item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(r, 7, w_item)
+
+            # W Qty
+            if p.wholesale_min_qty > 0:
+                wq_item = QTableWidgetItem(f"{p.wholesale_min_qty:.0f}+")
+                wq_item.setForeground(QColor("#059669"))
+                wq_item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(r, 8, wq_item)
+            else:
+                wq_item = QTableWidgetItem("—")
+                wq_item.setForeground(QColor("#94A3B8"))
+                wq_item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(r, 8, wq_item)
+
+            # Stock
+            stock_item = QTableWidgetItem(f"{p.stock_quantity:.0f}")
+            stock_item.setTextAlignment(Qt.AlignCenter)
+            if p.stock_quantity <= 0:
+                stock_item.setForeground(QColor("#DC2626"))
+                fnt4 = stock_item.font()
+                fnt4.setBold(True)
+                stock_item.setFont(fnt4)
+            elif p.stock_quantity <= p.minimum_stock:
+                stock_item.setForeground(QColor("#D97706"))
+                fnt4 = stock_item.font()
+                fnt4.setBold(True)
+                stock_item.setFont(fnt4)
+            else:
+                stock_item.setForeground(QColor("#059669"))
+            self.table.setItem(r, 9, stock_item)
+
+            # Min
+            min_item = QTableWidgetItem(f"{p.minimum_stock:.0f}")
+            min_item.setTextAlignment(Qt.AlignCenter)
+            min_item.setForeground(QColor("#64748B"))
+            self.table.setItem(r, 10, min_item)
+
+            # ACTIONS (Edit + Delete)
+            actions = QWidget()
+            al = QHBoxLayout(actions)
+            al.setContentsMargins(4, 4, 4, 4)
+            al.setSpacing(8)
+            al.setAlignment(Qt.AlignCenter)
+
+            edit_btn = QPushButton("Edit")
+            edit_btn.setFixedHeight(34)
+            edit_btn.setFixedWidth(62)
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setStyleSheet("""
+                QPushButton {
+                    background: #EEF2FF;
+                    color: #4F46E5;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 700;
+                    padding: 6px 10px;
+                }
+                QPushButton:hover {
+                    background: #4F46E5;
+                    color: white;
+                }
+            """)
+            edit_btn.clicked.connect(lambda _, pid=p.id: self.edit_product(pid))
+            al.addWidget(edit_btn)
+
+            del_btn = QPushButton("Delete")
+            del_btn.setFixedHeight(34)
+            del_btn.setFixedWidth(70)
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.setStyleSheet("""
+                QPushButton {
+                    background: #FEF2F2;
+                    color: #DC2626;
+                    border: none;
+                    border-radius: 6px;
+                    font-size: 12px;
+                    font-weight: 700;
+                    padding: 6px 10px;
+                }
+                QPushButton:hover {
+                    background: #DC2626;
+                    color: white;
+                }
+            """)
+            del_btn.clicked.connect(lambda _, pid=p.id: self.delete_product(pid))
+            al.addWidget(del_btn)
+
+            self.table.setCellWidget(r, 11, actions)
+
+        self.count_lbl.setText(f"{len(ps)} products")
+
+    # SELECTION
+    def _on_row_check(self, state, pid):
+        if state == 2:
+            self.selected_ids.add(pid)
+        else:
+            self.selected_ids.discard(pid)
+        self._update_bulk_bar()
+
+    def _update_bulk_bar(self):
+        count = len(self.selected_ids)
+        total = self.table.rowCount()
+
+        if count > 0:
+            self.selected_lbl.setText(f"●  {count} selected")
+            self.selected_lbl.setVisible(True)
+            self.bulk_delete_btn.setVisible(True)
+            self.clear_sel_btn.setVisible(True)
+            self.select_all_btn.setVisible(total > count)
+        else:
+            self.selected_lbl.setVisible(False)
+            self.bulk_delete_btn.setVisible(False)
+            self.clear_sel_btn.setVisible(False)
+            self.select_all_btn.setVisible(total > 0)
+
+    def select_all(self):
+        for pid, cb in self.all_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(True)
+            cb.blockSignals(False)
+            self.selected_ids.add(pid)
+        self._update_bulk_bar()
+
+    def clear_selection(self):
+        for pid, cb in self.all_checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(False)
+            cb.blockSignals(False)
+        self.selected_ids.clear()
+        self._update_bulk_bar()
+
+    # BULK DELETE
+    def bulk_delete(self):
+        if not self.selected_ids:
+            QMessageBox.information(self, "No Selection", "Please select products to delete.")
+            return
+
+        count = len(self.selected_ids)
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Delete Products")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setText(f"<b>Delete {count} products?</b>")
+        msg.setInformativeText(
+            "This will permanently remove the selected products.\n\n"
+            "Products with sales history will be marked as inactive instead.\n\n"
+            "⚠️  This action cannot be undone."
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+
+        if msg.exec() != QMessageBox.Yes:
+            return
+
+        try:
+            deleted = 0
+            skipped = 0
+            with SessionLocal() as s:
+                for pid in list(self.selected_ids):
+                    p = s.get(Product, pid)
+                    if not p:
+                        continue
+
+                    has_sales = s.query(SaleItem).filter_by(product_id=pid).first()
+                    if has_sales:
+                        p.active = False
+                        skipped += 1
+                    else:
+                        s.delete(p)
+                        deleted += 1
+
+                s.commit()
+
+            self.selected_ids.clear()
+            self.load()
+
+            info_msg = f"✅ {deleted} products deleted successfully."
+            if skipped > 0:
+                info_msg += f"\n\n⚠️  {skipped} products marked as inactive (they have sales history)."
+            QMessageBox.information(self, "Bulk Delete Complete", info_msg)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Failed", str(e))
+
+    # SINGLE DELETE
+    def delete_product(self, pid):
+        with SessionLocal() as s:
+            p = s.get(Product, pid)
+            if not p:
+                QMessageBox.warning(self, "Not Found", "Product not found.")
+                return
+            name = p.name
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Delete Product")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setText(f"<b>Delete '{name}'?</b>")
+        msg.setInformativeText(
+            "This will permanently remove the product.\n\n"
+            "⚠️  This action cannot be undone."
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+
+        if msg.exec() != QMessageBox.Yes:
+            return
+
+        try:
+            with SessionLocal() as s:
+                p = s.get(Product, pid)
+                if not p:
+                    return
+
+                has_sales = s.query(SaleItem).filter_by(product_id=pid).first()
+                if has_sales:
+                    p.active = False
+                    s.commit()
+                    QMessageBox.information(
+                        self, "Marked Inactive",
+                        f"'{name}' has sales history, so it was marked as inactive.\n\n"
+                        "It won't appear in POS but its sales history is preserved."
+                    )
+                else:
+                    s.delete(p)
+                    s.commit()
+                    QMessageBox.information(self, "Deleted", f"'{name}' deleted successfully.")
+
+            self.load()
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Failed", str(e))
+
+    # EDIT PRODUCT
+    def edit_product(self, pid):
+        with SessionLocal() as s:
+            p = s.get(Product, pid)
+            if not p:
+                QMessageBox.warning(self, "Not Found", "Product not found.")
+                return
+            data = {
+                "name": p.name, "barcode": p.barcode, "sku": p.sku,
+                "purchase_price": p.purchase_price,
+                "selling_price": p.selling_price,
+                "wholesale_price": p.wholesale_price,
+                "wholesale_min_qty": p.wholesale_min_qty,
+                "stock_quantity": p.stock_quantity,
+                "minimum_stock": p.minimum_stock,
+            }
+
         d = QDialog(self)
-        d.setWindowTitle("Add Product")
+        d.setWindowTitle(f"Edit Product — {data['name']}")
         d.setFixedWidth(520)
-        d.setFixedHeight(700)
+        d.setFixedHeight(720)
         d.setStyleSheet(DIALOG_STYLE)
 
         main = QVBoxLayout(d)
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
-        # Header
+        h = QFrame()
+        h.setStyleSheet("background: #FFFFFF; border-bottom: 1px solid #E2E8F0;")
+        hl = QVBoxLayout(h)
+        hl.setContentsMargins(28, 22, 28, 16)
+        t = QLabel("Edit Product")
+        t.setObjectName("DialogTitle")
+        t.setStyleSheet(DIALOG_STYLE)
+        hl.addWidget(t)
+        s_lbl = QLabel(f"Editing: {data['name']}")
+        s_lbl.setObjectName("DialogSub")
+        s_lbl.setStyleSheet(DIALOG_STYLE)
+        hl.addWidget(s_lbl)
+        main.addWidget(h)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("""
+            QScrollArea { border: none; background: #FFFFFF; }
+            QScrollBar:vertical {
+                background: #F1F5F9; width: 10px; border-radius: 5px;
+                margin: 4px 2px 4px 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #CBD5E1; border-radius: 5px; min-height: 40px;
+            }
+            QScrollBar::handle:vertical:hover { background: #94A3B8; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        """)
+
+        body = QWidget()
+        body.setStyleSheet("background: #FFFFFF;")
+        bv = QVBoxLayout(body)
+        bv.setContentsMargins(28, 20, 28, 20)
+        bv.setSpacing(12)
+
+        fields = {}
+
+        def add_field(label, key, value=""):
+            lbl = QLabel(label)
+            lbl.setStyleSheet("color: #334155; font-size: 12px; font-weight: 700;")
+            bv.addWidget(lbl)
+            w = QLineEdit()
+            w.setText(str(value) if value else "")
+            w.setFixedHeight(44)
+            w.setStyleSheet("""
+                QLineEdit {
+                    background: #FFFFFF; border: 2px solid #CBD5E1;
+                    border-radius: 10px; padding: 10px 14px;
+                    font-size: 13px; color: #0F172A;
+                }
+                QLineEdit:focus { border: 2px solid #4F46E5; }
+            """)
+            bv.addWidget(w)
+            fields[key] = w
+
+        add_field("Product Name *", "name", data["name"])
+        add_field("Barcode", "barcode", data["barcode"])
+        add_field("SKU", "sku", data["sku"])
+
+        section = QLabel("💰  PRICING")
+        section.setStyleSheet("""
+            color: #4F46E5; font-size: 12px; font-weight: 800;
+            letter-spacing: 1px; padding: 10px 12px;
+            background: #EEF2FF; border-radius: 8px;
+        """)
+        bv.addWidget(section)
+
+        add_field("Purchase Price (Rs.)", "purchase_price", f"{data['purchase_price']:.0f}")
+        add_field("Retail Price (Rs.) *", "selling_price", f"{data['selling_price']:.0f}")
+        add_field("Wholesale Price (Rs.)", "wholesale_price", f"{data['wholesale_price']:.0f}")
+        add_field("Wholesale Min Quantity", "wholesale_min_qty", f"{data['wholesale_min_qty']:.0f}")
+
+        section2 = QLabel("📦  STOCK")
+        section2.setStyleSheet("""
+            color: #059669; font-size: 12px; font-weight: 800;
+            letter-spacing: 1px; padding: 10px 12px;
+            background: #ECFDF5; border-radius: 8px;
+        """)
+        bv.addWidget(section2)
+
+        add_field("Stock Quantity *", "stock_quantity", f"{data['stock_quantity']:.0f}")
+        add_field("Minimum Stock", "minimum_stock", f"{data['minimum_stock']:.0f}")
+
+        bv.addStretch()
+        scroll.setWidget(body)
+        main.addWidget(scroll, 1)
+
+        footer = QFrame()
+        footer.setStyleSheet("background: #FFFFFF; border-top: 1px solid #E2E8F0;")
+        fl = QHBoxLayout(footer)
+        fl.setContentsMargins(28, 16, 28, 20)
+        fl.setSpacing(12)
+
+        cancel = QPushButton("Cancel")
+        cancel.setProperty("variant", "secondary")
+        cancel.setFixedHeight(48)
+        cancel.setFixedWidth(120)
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.clicked.connect(d.reject)
+        fl.addWidget(cancel)
+
+        save = QPushButton("💾  Save Changes")
+        save.setFixedHeight(48)
+        save.setCursor(Qt.PointingHandCursor)
+        save.clicked.connect(d.accept)
+        fl.addWidget(save, 1)
+
+        main.addWidget(footer)
+
+        if d.exec() != QDialog.Accepted:
+            return
+
+        try:
+            name = fields["name"].text().strip()
+            if not name:
+                QMessageBox.warning(self, "Missing Info", "Product name is required.")
+                return
+
+            with SessionLocal() as s:
+                p = s.get(Product, pid)
+                if not p:
+                    return
+
+                p.name = name
+                p.barcode = fields["barcode"].text().strip()
+                p.sku = fields["sku"].text().strip()
+                p.purchase_price = float(fields["purchase_price"].text() or 0)
+                p.selling_price = float(fields["selling_price"].text() or 0)
+                p.wholesale_price = float(fields["wholesale_price"].text() or 0)
+                p.wholesale_min_qty = float(fields["wholesale_min_qty"].text() or 0)
+                p.stock_quantity = float(fields["stock_quantity"].text() or 0)
+                p.minimum_stock = float(fields["minimum_stock"].text() or 0)
+
+                s.commit()
+
+            self.load()
+            QMessageBox.information(self, "Updated", f"'{name}' updated successfully.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Update Failed", str(e))
+
+    # ADD PRODUCT
+    def add(self):
+        d = QDialog(self)
+        d.setWindowTitle("Add Product")
+        d.setFixedWidth(520)
+        d.setFixedHeight(720)
+        d.setStyleSheet(DIALOG_STYLE)
+
+        main = QVBoxLayout(d)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+
         h = QFrame()
         h.setStyleSheet("background: #FFFFFF; border-bottom: 1px solid #E2E8F0;")
         hl = QVBoxLayout(h)
@@ -1350,11 +1905,21 @@ class ProductsWidget(QWidget):
         hl.addWidget(s)
         main.addWidget(h)
 
-        # Scrollable
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; background: #FFFFFF; }")
+        scroll.setStyleSheet("""
+            QScrollArea { border: none; background: #FFFFFF; }
+            QScrollBar:vertical {
+                background: #F1F5F9; width: 10px; border-radius: 5px;
+                margin: 4px 2px 4px 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #CBD5E1; border-radius: 5px; min-height: 40px;
+            }
+            QScrollBar::handle:vertical:hover { background: #94A3B8; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+        """)
 
         body = QWidget()
         body.setStyleSheet("background: #FFFFFF;")
@@ -1381,13 +1946,11 @@ class ProductsWidget(QWidget):
             """)
             bv.addWidget(w)
             fields[key] = w
-            return w
 
         add_field("Product Name *", "name", "e.g., Sugar 1kg")
         add_field("Barcode", "barcode", "e.g., 1000001")
         add_field("SKU", "sku", "e.g., GRC-0001")
 
-        # Pricing section
         section = QLabel("💰  PRICING")
         section.setStyleSheet("""
             color: #4F46E5; font-size: 12px; font-weight: 800;
@@ -1399,9 +1962,8 @@ class ProductsWidget(QWidget):
         add_field("Purchase Price (Rs.)", "purchase_price", "Cost price")
         add_field("Retail Price (Rs.) *", "selling_price", "Regular selling price")
         add_field("Wholesale Price (Rs.)", "wholesale_price", "Leave 0 if not applicable")
-        add_field("Wholesale Min Quantity", "wholesale_min_qty", "e.g., 12 (min qty for wholesale price)")
+        add_field("Wholesale Min Quantity", "wholesale_min_qty", "e.g., 6")
 
-        # Stock section
         section2 = QLabel("📦  STOCK")
         section2.setStyleSheet("""
             color: #059669; font-size: 12px; font-weight: 800;
@@ -1417,7 +1979,6 @@ class ProductsWidget(QWidget):
         scroll.setWidget(body)
         main.addWidget(scroll, 1)
 
-        # Footer
         footer = QFrame()
         footer.setStyleSheet("background: #FFFFFF; border-top: 1px solid #E2E8F0;")
         fl = QHBoxLayout(footer)
@@ -1428,11 +1989,13 @@ class ProductsWidget(QWidget):
         cancel.setProperty("variant", "secondary")
         cancel.setFixedHeight(48)
         cancel.setFixedWidth(120)
+        cancel.setCursor(Qt.PointingHandCursor)
         cancel.clicked.connect(d.reject)
         fl.addWidget(cancel)
 
         save = QPushButton("💾  Save Product")
         save.setFixedHeight(48)
+        save.setCursor(Qt.PointingHandCursor)
         save.clicked.connect(d.accept)
         fl.addWidget(save, 1)
 
@@ -1442,9 +2005,14 @@ class ProductsWidget(QWidget):
             return
 
         try:
+            name = fields["name"].text().strip()
+            if not name:
+                QMessageBox.warning(self, "Missing Info", "Product name is required.")
+                return
+
             with SessionLocal() as s:
                 s.add(Product(
-                    name=fields["name"].text().strip(),
+                    name=name,
                     barcode=fields["barcode"].text().strip(),
                     sku=fields["sku"].text().strip(),
                     purchase_price=float(fields["purchase_price"].text() or 0),
@@ -1456,9 +2024,11 @@ class ProductsWidget(QWidget):
                 ))
                 s.commit()
             self.load()
+            QMessageBox.information(self, "Added", f"'{name}' added successfully.")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
+    # IMPORT / EXPORT
     def import_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import", "", "Excel (*.xlsx);;CSV (*.csv)")
         if not path:
@@ -1576,7 +2146,9 @@ class SalesWidget(QWidget):
                 item = QTableWidgetItem(v)
                 if c == 7 and sale.credit_amount > 0:
                     item.setForeground(QColor("#D97706"))
-                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
+                    fnt = item.font()
+                    fnt.setBold(True)
+                    item.setFont(fnt)
                 self.table.setItem(r, c, item)
 
 
@@ -1631,7 +2203,9 @@ class InventoryWidget(QWidget):
                 item = QTableWidgetItem(v)
                 if c == 3:
                     item.setForeground(QColor(color))
-                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
+                    fnt = item.font()
+                    fnt.setBold(True)
+                    item.setFont(fnt)
                 self.table.setItem(r, c, item)
 
 
@@ -1749,7 +2323,9 @@ class CreditsWidget(QWidget):
                         item.setForeground(QColor("#DC2626"))
                     else:
                         item.setForeground(QColor("#059669"))
-                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
+                    fnt = item.font()
+                    fnt.setBold(True)
+                    item.setFont(fnt)
                 self.table.setItem(r, col, item)
 
             actions = QWidget()
@@ -2014,7 +2590,7 @@ class CreditsWidget(QWidget):
 
 
 # =========================================================
-# DASHBOARD (PREMIUM REDESIGN)
+# DASHBOARD
 # =========================================================
 class DashboardWidget(QWidget):
     def __init__(self):
@@ -2032,7 +2608,6 @@ class DashboardWidget(QWidget):
             elif item.layout():
                 self._clear(item.layout())
 
-        # ===== Header =====
         header = QHBoxLayout()
         header.setSpacing(12)
 
@@ -2049,7 +2624,6 @@ class DashboardWidget(QWidget):
         header.addLayout(title_box)
         header.addStretch()
 
-        # Refresh button
         refresh_btn = QPushButton("🔄  Refresh")
         refresh_btn.setProperty("variant", "secondary")
         refresh_btn.setFixedHeight(40)
@@ -2059,7 +2633,6 @@ class DashboardWidget(QWidget):
 
         self.l.addLayout(header)
 
-        # ===== Stats data =====
         with SessionLocal() as s:
             today = date.today()
             today_start = datetime.combine(today, datetime.min.time())
@@ -2075,11 +2648,9 @@ class DashboardWidget(QWidget):
             total_udhaar = sum(c.balance for c in credit_customers)
             pending_customers = sum(1 for c in credit_customers if c.balance > 0)
 
-            # This week
             week_start = today_start - timedelta(days=today.weekday())
             week_sales = s.query(Sale).filter(Sale.created_at >= week_start).all()
 
-        # ===== Main stat cards =====
         grid = QGridLayout()
         grid.setSpacing(16)
 
@@ -2110,7 +2681,7 @@ class DashboardWidget(QWidget):
                 "value": money(total_udhaar),
                 "icon": "💳",
                 "color": "#DC2626",
-                "subtitle": f"{pending_customers} pending customers"
+                "subtitle": f"{pending_customers} pending"
             },
         ]
 
@@ -2124,11 +2695,9 @@ class DashboardWidget(QWidget):
 
         self.l.addLayout(grid)
 
-        # ===== Bottom section: Recent Sales + Top Products =====
         bottom = QHBoxLayout()
         bottom.setSpacing(16)
 
-        # Recent Sales
         recent_box = QFrame()
         recent_box.setStyleSheet("""
             QFrame {
@@ -2183,7 +2752,6 @@ class DashboardWidget(QWidget):
 
         bottom.addWidget(recent_box, 1)
 
-        # Low Stock Alert
         alert_box = QFrame()
         alert_box.setStyleSheet("""
             QFrame {
@@ -2272,7 +2840,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ============ TOP BAR ============
+        # TOP BAR
         top = QFrame()
         top.setObjectName("TopBar")
         top.setStyleSheet(TOPBAR_STYLE)
@@ -2302,7 +2870,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(top)
 
-        # ============ BODY ============
+        # BODY
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
@@ -2448,3 +3016,4 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Backup Complete", f"Saved to:\n{name}")
         except Exception as e:
             QMessageBox.critical(self, "Backup Failed", str(e))
+            
