@@ -1,7 +1,7 @@
 # app/ui/widgets.py
 from PySide6.QtWidgets import *
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QPainter, QBrush, QPen, QPainterPath
 from app.ui.category_data import get_initials
 from app.ui.styles import PRODUCT_CARD_STYLE, CART_STYLE
 from app.database import SessionLocal
@@ -16,8 +16,199 @@ def money(v):
     return f"Rs. {v:,.2f}"
 
 
+# =========================================================
+# CHART WIDGETS (Custom-painted, no external deps)
+# =========================================================
+class BarChartWidget(QWidget):
+    """Simple bar chart for sales data"""
+    def __init__(self, data=None, parent=None):
+        super().__init__(parent)
+        self.data = data or []  # list of (label, value)
+        self.setMinimumHeight(220)
+
+    def set_data(self, data):
+        self.data = data
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+        padding_left = 60
+        padding_right = 20
+        padding_top = 20
+        padding_bottom = 40
+
+        chart_w = w - padding_left - padding_right
+        chart_h = h - padding_top - padding_bottom
+
+        # Background
+        painter.fillRect(0, 0, w, h, QColor("#FFFFFF"))
+
+        if not self.data:
+            painter.setPen(QColor("#94A3B8"))
+            painter.setFont(QFont("Segoe UI", 11))
+            painter.drawText(0, 0, w, h, Qt.AlignCenter, "No data available")
+            return
+
+        max_val = max(v for _, v in self.data) if self.data else 1
+        if max_val == 0:
+            max_val = 1
+
+        # Draw Y-axis grid lines
+        painter.setPen(QPen(QColor("#F1F5F9"), 1))
+        for i in range(5):
+            y = padding_top + (chart_h * i / 4)
+            painter.drawLine(padding_left, int(y), w - padding_right, int(y))
+
+            # Y labels
+            val = max_val * (4 - i) / 4
+            painter.setPen(QColor("#94A3B8"))
+            painter.setFont(QFont("Segoe UI", 9))
+            painter.drawText(5, int(y) + 4, 50, 20, Qt.AlignRight | Qt.AlignVCenter,
+                             f"{int(val):,}")
+            painter.setPen(QPen(QColor("#F1F5F9"), 1))
+
+        # Draw bars
+        n = len(self.data)
+        if n == 0:
+            return
+        bar_slot = chart_w / n
+        bar_w = bar_slot * 0.55
+
+        for i, (label, value) in enumerate(self.data):
+            bar_h = (value / max_val) * chart_h if max_val > 0 else 0
+            x = padding_left + i * bar_slot + (bar_slot - bar_w) / 2
+            y = padding_top + chart_h - bar_h
+
+            # Bar gradient
+            path = QPainterPath()
+            radius = 6
+            path.addRoundedRect(x, y, bar_w, bar_h, radius, radius)
+
+            grad = QLinearGradient(x, y, x, y + bar_h)
+            grad.setColorAt(0, QColor("#6366F1"))
+            grad.setColorAt(1, QColor("#4F46E5"))
+            painter.fillPath(path, QBrush(grad))
+
+            # Value on top
+            if value > 0:
+                painter.setPen(QColor("#4F46E5"))
+                painter.setFont(QFont("Segoe UI", 9, QFont.Bold))
+                painter.drawText(int(x - 10), int(y) - 20, int(bar_w + 20), 20,
+                                 Qt.AlignCenter, f"{int(value):,}")
+
+            # X-axis label
+            painter.setPen(QColor("#64748B"))
+            painter.setFont(QFont("Segoe UI", 9))
+            painter.drawText(int(x - 10), h - padding_bottom + 8, int(bar_w + 20), 30,
+                             Qt.AlignCenter, label)
+
+        painter.end()
+
+
+class DonutChartWidget(QWidget):
+    """Donut chart for category breakdown"""
+    def __init__(self, data=None, parent=None):
+        super().__init__(parent)
+        self.data = data or []  # list of (label, value)
+        self.setMinimumHeight(220)
+
+    def set_data(self, data):
+        self.data = data
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        w = self.width()
+        h = self.height()
+
+        painter.fillRect(0, 0, w, h, QColor("#FFFFFF"))
+
+        if not self.data:
+            painter.setPen(QColor("#94A3B8"))
+            painter.setFont(QFont("Segoe UI", 11))
+            painter.drawText(0, 0, w, h, Qt.AlignCenter, "No data available")
+            return
+
+        # Colors
+        colors = [
+            "#4F46E5", "#059669", "#D97706", "#DC2626",
+            "#7C3AED", "#0891B2", "#DB2777", "#65A30D",
+        ]
+
+        total = sum(v for _, v in self.data)
+        if total == 0:
+            total = 1
+
+        # Draw donut
+        donut_size = min(w, h) - 60
+        donut_x = 40
+        donut_y = (h - donut_size) / 2
+        rect = (donut_x, int(donut_y), donut_size, donut_size)
+
+        start_angle = 90 * 16  # Start from top
+        for i, (label, value) in enumerate(self.data):
+            span = int((value / total) * 360 * 16)
+            color = QColor(colors[i % len(colors)])
+            painter.setBrush(QBrush(color))
+            painter.setPen(Qt.NoPen)
+            painter.drawPie(*rect, start_angle, -span)
+            start_angle -= span
+
+        # Donut hole
+        hole_size = int(donut_size * 0.55)
+        hole_x = donut_x + (donut_size - hole_size) // 2
+        hole_y = int(donut_y + (donut_size - hole_size) / 2)
+        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.drawEllipse(hole_x, hole_y, hole_size, hole_size)
+
+        # Center text
+        painter.setPen(QColor("#0F172A"))
+        painter.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        painter.drawText(hole_x, hole_y, hole_size, hole_size,
+                         Qt.AlignCenter, f"{int(total):,}")
+
+        # Legend
+        legend_x = donut_x + donut_size + 20
+        legend_y = 40
+        painter.setFont(QFont("Segoe UI", 10))
+
+        for i, (label, value) in enumerate(self.data):
+            color = QColor(colors[i % len(colors)])
+
+            # Color box
+            painter.setBrush(QBrush(color))
+            painter.setPen(Qt.NoPen)
+            painter.drawRoundedRect(legend_x, legend_y, 12, 12, 3, 3)
+
+            # Text
+            painter.setPen(QColor("#0F172A"))
+            painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            painter.drawText(legend_x + 20, legend_y + 12, label[:15])
+
+            painter.setPen(QColor("#64748B"))
+            painter.setFont(QFont("Segoe UI", 9))
+            painter.drawText(legend_x + 20, legend_y + 26, f"{int(value):,} ({int(value/total*100)}%)")
+
+            legend_y += 45
+            if legend_y > h - 40:
+                break
+
+        painter.end()
+
+
+from PySide6.QtGui import QLinearGradient
+
+
+# =========================================================
+# PRODUCT CARD
+# =========================================================
 class ProductCard(QFrame):
-    """Premium product card with retail + wholesale info"""
     clicked = Signal(int)
 
     def __init__(self, product, parent=None):
@@ -32,7 +223,6 @@ class ProductCard(QFrame):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(5)
 
-        # Top row
         top = QHBoxLayout()
         top.setSpacing(4)
 
@@ -69,13 +259,11 @@ class ProductCard(QFrame):
         sku.setStyleSheet(PRODUCT_CARD_STYLE)
         layout.addWidget(sku)
 
-        # Retail price
         price = QLabel(money(product.selling_price))
         price.setObjectName("ProductPrice")
         price.setStyleSheet(PRODUCT_CARD_STYLE)
         layout.addWidget(price)
 
-        # Wholesale info
         if product.wholesale_price > 0:
             wtext = QLabel(f"W: {money(product.wholesale_price)} ({int(product.wholesale_min_qty)}+)")
             wtext.setStyleSheet("color: #059669; font-size: 10px; font-weight: 700; background: transparent;")
@@ -85,7 +273,6 @@ class ProductCard(QFrame):
             spacer.setFixedHeight(12)
             layout.addWidget(spacer)
 
-        # Stock
         stock = product.stock_quantity
         if stock <= 0:
             s = QLabel("OUT OF STOCK")
@@ -216,7 +403,6 @@ class CartItemWidget(QFrame):
 
 
 class StatCard(QFrame):
-    """Modern stat card for dashboard"""
     def __init__(self, title: str, value: str, icon: str = "", color: str = "#4F46E5", subtitle: str = "", parent=None):
         super().__init__(parent)
         self.setStyleSheet(f"""
@@ -230,7 +416,6 @@ class StatCard(QFrame):
         layout.setContentsMargins(20, 18, 20, 18)
         layout.setSpacing(10)
 
-        # Top row: icon + title
         top = QHBoxLayout()
         top.setSpacing(10)
 
@@ -263,12 +448,10 @@ class StatCard(QFrame):
         top.addStretch()
         layout.addLayout(top)
 
-        # Value
         val_lbl = QLabel(value)
         val_lbl.setStyleSheet(f"color: {color}; font-size: 28px; font-weight: 900; background: transparent; letter-spacing: -0.5px;")
         layout.addWidget(val_lbl)
 
-        # Bottom accent bar
         accent = QFrame()
         accent.setFixedHeight(3)
         accent.setStyleSheet(f"background: {color}; border-radius: 2px;")
@@ -276,7 +459,14 @@ class StatCard(QFrame):
         layout.addWidget(accent)
 
 
+# =========================================================
+# FIXED LIVE SEARCH BAR
+# =========================================================
 class LiveSearchBar(QLineEdit):
+    """
+    Fixed live search - types letter by letter, shows dropdown suggestions.
+    The previous issue was the QTimer debounce + popup stealing focus.
+    """
     product_selected = Signal(int)
 
     def __init__(self, parent=None):
@@ -284,8 +474,10 @@ class LiveSearchBar(QLineEdit):
         self.setPlaceholderText("🔍  Search products by name, barcode or SKU...")
         self.setFixedHeight(44)
 
+        # Dropdown
         self.dropdown = QListWidget()
         self.dropdown.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
+        self.dropdown.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from search bar
         self.dropdown.setStyleSheet("""
             QListWidget {
                 background: #FFFFFF;
@@ -304,18 +496,23 @@ class LiveSearchBar(QLineEdit):
         """)
         self.dropdown.itemClicked.connect(self._on_item_clicked)
 
+        # Debounce timer - 200ms to keep typing responsive
         self.timer = QTimer()
         self.timer.setSingleShot(True)
-        self.timer.setInterval(150)
+        self.timer.setInterval(200)
         self.timer.timeout.connect(self._do_search)
 
-        self.textChanged.connect(self._on_text_changed)
+        # CRITICAL FIX: use textEdited (fires on every keystroke) not textChanged
+        self.textEdited.connect(self._on_text_edited)
         self.returnPressed.connect(self._on_enter)
 
-    def _on_text_changed(self, text):
+    def _on_text_edited(self, text):
+        """Called on every keystroke - debounced search"""
         if not text.strip():
             self.dropdown.hide()
             return
+        # Restart timer on every keystroke (debouncing)
+        self.timer.stop()
         self.timer.start()
 
     def _do_search(self):
@@ -344,14 +541,16 @@ class LiveSearchBar(QLineEdit):
                     item.setData(Qt.UserRole, p.id)
                     self.dropdown.addItem(item)
 
+        # Show dropdown positioned below search bar
         global_pos = self.mapToGlobal(self.rect().bottomLeft())
         self.dropdown.setFixedWidth(self.width())
         self.dropdown.move(global_pos.x(), global_pos.y() + 4)
         row_h = 42
-        h = min(360, row_h * self.dropdown.count() + 12)
+        h = min(380, row_h * self.dropdown.count() + 12)
         self.dropdown.setFixedHeight(max(60, h))
         self.dropdown.show()
         self.dropdown.raise_()
+        # DON'T steal focus back - user should keep typing
 
     def _on_item_clicked(self, item):
         pid = item.data(Qt.UserRole)
@@ -361,6 +560,7 @@ class LiveSearchBar(QLineEdit):
             self.dropdown.hide()
 
     def _on_enter(self):
+        """Enter key - select first item"""
         if self.dropdown.count() > 0:
             item = self.dropdown.item(0)
             pid = item.data(Qt.UserRole)
@@ -370,12 +570,17 @@ class LiveSearchBar(QLineEdit):
                 self.dropdown.hide()
 
     def keyPressEvent(self, event):
+        # Arrow navigation while typing
         if self.dropdown.isVisible():
             if event.key() == Qt.Key_Down:
-                self.dropdown.setCurrentRow(min(self.dropdown.currentRow() + 1, self.dropdown.count() - 1))
+                self.dropdown.setCurrentRow(
+                    min(self.dropdown.currentRow() + 1, self.dropdown.count() - 1)
+                )
                 return
             if event.key() == Qt.Key_Up:
-                self.dropdown.setCurrentRow(max(self.dropdown.currentRow() - 1, 0))
+                self.dropdown.setCurrentRow(
+                    max(self.dropdown.currentRow() - 1, 0)
+                )
                 return
             if event.key() == Qt.Key_Escape:
                 self.dropdown.hide()

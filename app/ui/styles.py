@@ -353,4 +353,86 @@ QLabel#StatLabel {
     color: #64748B; font-size: 11px; font-weight: 800; letter-spacing: 0.8px;
 }
 QLabel#StatValueBig { color: #0F172A; font-size: 26px; font-weight: 900; }
+"""# =========================================================
+# USER MANAGEMENT STYLES (append to existing styles.py)
+# =========================================================
+USER_DIALOG_STYLE = """
+QDialog { background: #FFFFFF; }
+QLabel#UserTitle {
+    color: #0F172A;
+    font-size: 20px;
+    font-weight: 800;
+}
+QLabel#UserSub {
+    color: #64748B;
+    font-size: 12px;
+}
+QLabel#UserLabel {
+    color: #334155;
+    font-size: 12px;
+    font-weight: 700;
+}
+QFrame#UserCard {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 12px;
+}
+QLabel#UserAvatar {
+    background: #4F46E5;
+    color: white;
+    border-radius: 24px;
+    font-size: 22px;
+    font-weight: 800;
+}
+QLabel#RoleBadgeAdmin {
+    background: #EEF2FF;
+    color: #4F46E5;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}
+QLabel#RoleBadgeCashier {
+    background: #ECFDF5;
+    color: #059669;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+}
+QFrame#DangerZone {
+    background: #FEF2F2;
+    border: 1px solid #FECACA;
+    border-radius: 10px;
+}
+QLabel#DangerLabel {
+    color: #DC2626;
+    font-size: 12px;
+    font-weight: 700;
+}
+"""
+
+DASHBOARD_ENHANCED_STYLE = """
+QFrame#ChartCard {
+    background: #FFFFFF;
+    border: 1px solid #E8ECF1;
+    border-radius: 14px;
+}
+QLabel#ChartTitle {
+    color: #0F172A;
+    font-size: 14px;
+    font-weight: 800;
+    background: transparent;
+}
+QLabel#ChartSubtitle {
+    color: #64748B;
+    font-size: 11px;
+    background: transparent;
+}
+QFrame#StatRow {
+    background: #F8FAFC;
+    border-radius: 8px;
+}
 """

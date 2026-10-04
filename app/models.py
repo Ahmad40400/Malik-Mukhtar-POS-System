@@ -10,6 +10,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
+    full_name: Mapped[str] = mapped_column(String(150), default="")
     role: Mapped[str] = mapped_column(String(30), default="Cashier")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now)
@@ -29,9 +30,9 @@ class Product(Base):
     barcode: Mapped[str] = mapped_column(String(100), unique=True, index=True, default="")
     sku: Mapped[str] = mapped_column(String(100), unique=True, index=True, default="")
     purchase_price: Mapped[float] = mapped_column(Float, default=0)
-    selling_price: Mapped[float] = mapped_column(Float, default=0)         # Retail price
-    wholesale_price: Mapped[float] = mapped_column(Float, default=0)       # Wholesale price
-    wholesale_min_qty: Mapped[float] = mapped_column(Float, default=0)     # Min qty for wholesale
+    selling_price: Mapped[float] = mapped_column(Float, default=0)
+    wholesale_price: Mapped[float] = mapped_column(Float, default=0)
+    wholesale_min_qty: Mapped[float] = mapped_column(Float, default=0)
     stock_quantity: Mapped[float] = mapped_column(Float, default=0)
     minimum_stock: Mapped[float] = mapped_column(Float, default=0)
     tax: Mapped[float] = mapped_column(Float, default=0)

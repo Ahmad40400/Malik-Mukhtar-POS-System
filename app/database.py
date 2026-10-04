@@ -1,6 +1,6 @@
 # app/database.py
 from pathlib import Path
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 import bcrypt
 from datetime import datetime
@@ -29,23 +29,46 @@ from app.models import (
 def init_db():
     Base.metadata.create_all(engine)
 
-    # ===== AUTO MIGRATION: Add wholesale_min_qty if missing =====
+    # Auto migration
     import sqlite3
     conn = sqlite3.connect(str(DB_PATH))
     cur = conn.cursor()
+
+    # Products migrations
     cur.execute("PRAGMA table_info(products)")
-    existing_cols = {row[1] for row in cur.fetchall()}
-    if "wholesale_min_qty" not in existing_cols:
+    prod_cols = {row[1] for row in cur.fetchall()}
+    if "wholesale_price" not in prod_cols:
+        cur.execute("ALTER TABLE products ADD COLUMN wholesale_price FLOAT DEFAULT 0")
+    if "wholesale_min_qty" not in prod_cols:
         cur.execute("ALTER TABLE products ADD COLUMN wholesale_min_qty FLOAT DEFAULT 0")
-        conn.commit()
-        print("✅ Added column: wholesale_min_qty")
+
+    # Users migrations
+    cur.execute("PRAGMA table_info(users)")
+    user_cols = {row[1] for row in cur.fetchall()}
+    if "full_name" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN full_name VARCHAR(150) DEFAULT ''")
+
+    # Sales migrations
+    cur.execute("PRAGMA table_info(sales)")
+    sale_cols = {row[1] for row in cur.fetchall()}
+    if "credit_customer_id" not in sale_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN credit_customer_id INTEGER")
+    if "credit_amount" not in sale_cols:
+        cur.execute("ALTER TABLE sales ADD COLUMN credit_amount FLOAT DEFAULT 0")
+
+    conn.commit()
     conn.close()
-    # ===== END MIGRATION =====
 
     with SessionLocal() as s:
         if not s.query(User).first():
             pw = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode()
-            s.add(User(username="admin", password_hash=pw, role="Admin", active=True))
+            s.add(User(
+                username="admin",
+                password_hash=pw,
+                full_name="Administrator",
+                role="Admin",
+                active=True
+            ))
         if not s.query(Category).first():
             cats = ["Grocery", "Beverages", "Personal Care", "Household", "Other"]
             s.add_all([Category(name=x) for x in cats])

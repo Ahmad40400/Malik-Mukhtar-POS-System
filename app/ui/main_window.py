@@ -1,7 +1,7 @@
 # app/ui/main_window.py
 from PySide6.QtWidgets import *
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QColor
+from PySide6.QtGui import QFont, QColor, QLinearGradient
 from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 from app.database import SessionLocal
 from app.models import (
@@ -11,6 +11,7 @@ from app.models import (
 )
 import bcrypt, shutil, csv
 from datetime import datetime, date, timedelta
+from collections import defaultdict
 
 from app.ui.styles import (
     GLOBAL_STYLE, SIDEBAR_STYLE, TOPBAR_STYLE, CATEGORY_STYLE,
@@ -20,8 +21,34 @@ from app.ui.styles import (
 from app.ui.category_data import CATEGORY_ICONS
 from app.ui.widgets import (
     ProductCard, CategoryButton, CartItemWidget, StatCard,
-    LiveSearchBar, money
+    LiveSearchBar, money, BarChartWidget, DonutChartWidget
 )
+
+
+# =========================================================
+# PERMISSIONS SYSTEM
+# =========================================================
+ROLE_PERMISSIONS = {
+    "Admin": {
+        "dashboard": True, "pos": True, "products": True,
+        "inventory": True, "sales": True, "credits": True,
+        "users": True, "backup": True,
+    },
+    "Manager": {
+        "dashboard": True, "pos": True, "products": True,
+        "inventory": True, "sales": True, "credits": True,
+        "users": False, "backup": True,
+    },
+    "Cashier": {
+        "dashboard": False, "pos": True, "products": False,
+        "inventory": False, "sales": False, "credits": True,
+        "users": False, "backup": False,
+    },
+}
+
+
+def has_permission(role, key):
+    return ROLE_PERMISSIONS.get(role, {}).get(key, False)
 
 
 # =========================================================
@@ -136,6 +163,498 @@ class LoginDialog(QDialog):
 
 
 # =========================================================
+# USER DIALOG
+# =========================================================
+class UserDialog(QDialog):
+    def __init__(self, user_id=None, parent=None):
+        super().__init__(parent)
+        self.user_id = user_id
+        self.result = None
+        self.setWindowTitle("Add User" if not user_id else "Edit User")
+        self.setFixedSize(480, 640)
+        self.setStyleSheet(DIALOG_STYLE)
+
+        data = None
+        if user_id:
+            with SessionLocal() as s:
+                u = s.get(User, user_id)
+                if u:
+                    data = {
+                        "username": u.username,
+                        "full_name": u.full_name or u.username,
+                        "role": u.role,
+                        "active": u.active,
+                    }
+
+        main = QVBoxLayout(self)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+
+        # Header
+        h = QFrame()
+        h.setStyleSheet("background: #FFFFFF; border-bottom: 1px solid #E2E8F0;")
+        hl = QVBoxLayout(h)
+        hl.setContentsMargins(28, 22, 28, 16)
+        t = QLabel("Add User" if not user_id else "Edit User")
+        t.setStyleSheet("font-size: 20px; font-weight: 800; color: #0F172A;")
+        hl.addWidget(t)
+        s_lbl = QLabel("Create a new system user" if not user_id else "Update user details")
+        s_lbl.setStyleSheet("color: #64748B; font-size: 12px;")
+        hl.addWidget(s_lbl)
+        main.addWidget(h)
+
+        # Scrollable body
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: #FFFFFF; }")
+
+        body = QWidget()
+        body.setStyleSheet("background: #FFFFFF;")
+        bv = QVBoxLayout(body)
+        bv.setContentsMargins(28, 20, 28, 20)
+        bv.setSpacing(12)
+
+        def add_label(text):
+            lbl = QLabel(text)
+            lbl.setStyleSheet("color: #334155; font-size: 12px; font-weight: 700;")
+            bv.addWidget(lbl)
+
+        def add_input(placeholder="", text="", echo=None):
+            w = QLineEdit()
+            w.setPlaceholderText(placeholder)
+            w.setText(text)
+            if echo:
+                w.setEchoMode(echo)
+            w.setFixedHeight(44)
+            w.setStyleSheet("""
+                QLineEdit {
+                    background: #FFFFFF; border: 2px solid #CBD5E1;
+                    border-radius: 10px; padding: 10px 14px;
+                    font-size: 13px; color: #0F172A;
+                }
+                QLineEdit:focus { border: 2px solid #4F46E5; }
+            """)
+            bv.addWidget(w)
+            return w
+
+        add_label("Full Name *")
+        self.full_name = add_input("e.g., Ali Ahmed", data["full_name"] if data else "")
+
+        add_label("Username *")
+        self.username = add_input("e.g., ali01", data["username"] if data else "")
+
+        add_label("Password *" if not user_id else "New Password (leave blank to keep)")
+        self.password = add_input("••••••••", "", QLineEdit.Password)
+
+        add_label("Role *")
+        self.role = QComboBox()
+        self.role.addItems(["Cashier", "Manager", "Admin"])
+        if data:
+            idx = self.role.findText(data["role"])
+            if idx >= 0:
+                self.role.setCurrentIndex(idx)
+        self.role.setFixedHeight(44)
+        self.role.setStyleSheet("""
+            QComboBox {
+                background: #FFFFFF; border: 2px solid #CBD5E1;
+                border-radius: 10px; padding: 10px 14px;
+                font-size: 13px; color: #0F172A;
+                font-weight: 600;
+            }
+            QComboBox:focus { border: 2px solid #4F46E5; }
+            QComboBox::drop-down { border: none; width: 36px; }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #4F46E5;
+                margin-right: 12px;
+            }
+            QComboBox QAbstractItemView {
+                background: #FFFFFF;
+                border: 2px solid #4F46E5;
+                border-radius: 10px;
+                padding: 6px;
+                outline: none;
+                selection-background-color: #EEF2FF;
+                selection-color: #4F46E5;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 12px 16px;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 600;
+                min-height: 24px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background: #EEF2FF;
+            }
+        """)
+        bv.addWidget(self.role)
+
+        # Role description
+        self.role_desc = QLabel()
+        self.role_desc.setStyleSheet("""
+            color: #64748B; font-size: 11px;
+            background: #F8FAFC;
+            padding: 10px 14px;
+            border-radius: 8px;
+        """)
+        self.role_desc.setWordWrap(True)
+        self._update_role_desc()
+        self.role.currentIndexChanged.connect(self._update_role_desc)
+        bv.addWidget(self.role_desc)
+
+        # Active checkbox
+        self.active_cb = QCheckBox("Active (can login to system)")
+        self.active_cb.setChecked(data["active"] if data else True)
+        self.active_cb.setStyleSheet("""
+            QCheckBox {
+                color: #334155; font-size: 13px; font-weight: 600;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 20px; height: 20px;
+                border: 2px solid #CBD5E1;
+                border-radius: 5px;
+                background: #FFFFFF;
+            }
+            QCheckBox::indicator:checked {
+                background: #4F46E5;
+                border: 2px solid #4F46E5;
+            }
+        """)
+        bv.addWidget(self.active_cb)
+
+        bv.addStretch()
+        scroll.setWidget(body)
+        main.addWidget(scroll, 1)
+
+        # Footer
+        footer = QFrame()
+        footer.setStyleSheet("background: #FFFFFF; border-top: 1px solid #E2E8F0;")
+        fl = QHBoxLayout(footer)
+        fl.setContentsMargins(28, 16, 28, 20)
+        fl.setSpacing(12)
+
+        cancel = QPushButton("Cancel")
+        cancel.setProperty("variant", "secondary")
+        cancel.setFixedHeight(48)
+        cancel.setFixedWidth(120)
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.clicked.connect(self.reject)
+        fl.addWidget(cancel)
+
+        save = QPushButton("💾  Save User")
+        save.setFixedHeight(48)
+        save.setCursor(Qt.PointingHandCursor)
+        save.clicked.connect(self._save)
+        fl.addWidget(save, 1)
+
+        main.addWidget(footer)
+
+    def _update_role_desc(self):
+        role = self.role.currentText()
+        descs = {
+            "Admin": "Full access: Dashboard, POS, Products, Inventory, Sales, Credits, and User Management.",
+            "Manager": "Access: Dashboard, POS, Products, Inventory, Sales, and Credits. No user management.",
+            "Cashier": "Limited: POS and Udhaar/Credits only. No dashboard, products, inventory, or sales history.",
+        }
+        self.role_desc.setText(f"ℹ️  {descs.get(role, '')}")
+
+    def _save(self):
+        full_name = self.full_name.text().strip()
+        username = self.username.text().strip()
+        password = self.password.text()
+        role = self.role.currentText()
+        active = self.active_cb.isChecked()
+
+        if not full_name:
+            QMessageBox.warning(self, "Missing Info", "Full name is required.")
+            return
+        if not username:
+            QMessageBox.warning(self, "Missing Info", "Username is required.")
+            return
+        if not self.user_id and not password:
+            QMessageBox.warning(self, "Missing Info", "Password is required for new users.")
+            return
+        if password and len(password) < 4:
+            QMessageBox.warning(self, "Weak Password", "Password must be at least 4 characters.")
+            return
+
+        try:
+            with SessionLocal() as s:
+                existing = s.query(User).filter_by(username=username).first()
+                if existing and existing.id != self.user_id:
+                    QMessageBox.warning(self, "Duplicate", "Username already exists.")
+                    return
+
+                if self.user_id:
+                    u = s.get(User, self.user_id)
+                    if not u:
+                        QMessageBox.warning(self, "Not Found", "User not found.")
+                        return
+                    u.full_name = full_name
+                    u.username = username
+                    u.role = role
+                    u.active = active
+                    if password:
+                        u.password_hash = bcrypt.hashpw(
+                            password.encode(), bcrypt.gensalt()
+                        ).decode()
+                else:
+                    pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+                    s.add(User(
+                        username=username,
+                        full_name=full_name,
+                        password_hash=pw_hash,
+                        role=role,
+                        active=active,
+                    ))
+                s.commit()
+
+            self.result = True
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+
+
+# =========================================================
+# USERS WIDGET (Admin only)
+# =========================================================
+class UsersWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(14)
+
+        header = QHBoxLayout()
+        title = QLabel("User Management")
+        title.setStyleSheet("font-size: 22px; font-weight: 900; color: #0F172A;")
+        header.addWidget(title)
+
+        self.count_lbl = QLabel("")
+        self.count_lbl.setStyleSheet("color: #64748B; font-size: 13px; font-weight: 600; padding-left: 12px;")
+        header.addWidget(self.count_lbl)
+        header.addStretch()
+
+        add = QPushButton("+ Add User")
+        add.setFixedHeight(40)
+        add.setCursor(Qt.PointingHandCursor)
+        add.clicked.connect(self.add_user)
+        header.addWidget(add)
+
+        refresh = QPushButton("Refresh")
+        refresh.setProperty("variant", "secondary")
+        refresh.setFixedHeight(40)
+        refresh.clicked.connect(self.load)
+        header.addWidget(refresh)
+
+        root.addLayout(header)
+
+        # Info banner
+        info = QFrame()
+        info.setStyleSheet("background: #EEF2FF; border: 1px solid #C7D2FE; border-radius: 10px;")
+        il = QHBoxLayout(info)
+        il.setContentsMargins(16, 12, 16, 12)
+        icon_lbl = QLabel("ℹ️")
+        icon_lbl.setStyleSheet("font-size: 18px; background: transparent;")
+        il.addWidget(icon_lbl)
+        text = QLabel(
+            "<b>Roles:</b> "
+            "<b>Admin</b> → full access  •  "
+            "<b>Manager</b> → products, inventory, sales, credits  •  "
+            "<b>Cashier</b> → POS and Udhaar only"
+        )
+        text.setStyleSheet("color: #4F46E5; font-size: 12px; background: transparent;")
+        text.setWordWrap(True)
+        il.addWidget(text, 1)
+        root.addWidget(info)
+
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(
+            ["AVATAR", "NAME", "USERNAME", "ROLE", "STATUS", "ACTIONS"]
+        )
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.NoSelection)
+        self.table.setFocusPolicy(Qt.NoFocus)
+        self.table.setColumnWidth(0, 70)
+        self.table.setColumnWidth(1, 220)
+        self.table.setColumnWidth(2, 180)
+        self.table.setColumnWidth(3, 130)
+        self.table.setColumnWidth(4, 130)
+        self.table.setColumnWidth(5, 180)
+
+        root.addWidget(self.table, 1)
+        self.load()
+
+    def load(self):
+        with SessionLocal() as s:
+            users = s.query(User).order_by(User.role, User.username).all()
+            data = [(u.id, u.username, u.full_name or u.username, u.role, u.active) for u in users]
+
+        self.table.setRowCount(0)
+        for uid, username, full_name, role, active in data:
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self.table.setRowHeight(r, 64)
+
+            # Avatar
+            av_widget = QWidget()
+            av_l = QHBoxLayout(av_widget)
+            av_l.setContentsMargins(0, 0, 0, 0)
+            av_l.setAlignment(Qt.AlignCenter)
+            av = QLabel((full_name or username)[0].upper())
+            av.setAlignment(Qt.AlignCenter)
+            av.setFixedSize(44, 44)
+            av.setStyleSheet("""
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #6366F1, stop:1 #4F46E5);
+                color: white; border-radius: 22px;
+                font-size: 18px; font-weight: 800;
+            """)
+            av_l.addWidget(av)
+            self.table.setCellWidget(r, 0, av_widget)
+
+            # Name
+            name_item = QTableWidgetItem(full_name)
+            fnt = name_item.font(); fnt.setBold(True); fnt.setPointSize(11)
+            name_item.setFont(fnt)
+            self.table.setItem(r, 1, name_item)
+
+            # Username
+            un_item = QTableWidgetItem(f"@{username}")
+            un_item.setForeground(QColor("#64748B"))
+            self.table.setItem(r, 2, un_item)
+
+            # Role badge
+            role_widget = QWidget()
+            rl = QHBoxLayout(role_widget)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setAlignment(Qt.AlignCenter)
+            rb = QLabel(role.upper())
+            if role == "Admin":
+                rb.setStyleSheet("""
+                    background: #EEF2FF; color: #4F46E5;
+                    border-radius: 6px; padding: 6px 14px;
+                    font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+                """)
+            elif role == "Manager":
+                rb.setStyleSheet("""
+                    background: #FEF3C7; color: #D97706;
+                    border-radius: 6px; padding: 6px 14px;
+                    font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+                """)
+            else:
+                rb.setStyleSheet("""
+                    background: #ECFDF5; color: #059669;
+                    border-radius: 6px; padding: 6px 14px;
+                    font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+                """)
+            rl.addWidget(rb)
+            self.table.setCellWidget(r, 3, role_widget)
+
+            # Status
+            status_widget = QWidget()
+            sl = QHBoxLayout(status_widget)
+            sl.setContentsMargins(0, 0, 0, 0)
+            sl.setAlignment(Qt.AlignCenter)
+            sb = QLabel("● ACTIVE" if active else "● INACTIVE")
+            sb.setStyleSheet(f"""
+                color: {'#059669' if active else '#94A3B8'};
+                font-size: 11px; font-weight: 800; letter-spacing: 0.5px;
+            """)
+            sl.addWidget(sb)
+            self.table.setCellWidget(r, 4, status_widget)
+
+            # Actions
+            actions = QWidget()
+            al = QHBoxLayout(actions)
+            al.setContentsMargins(4, 4, 4, 4)
+            al.setSpacing(8)
+            al.setAlignment(Qt.AlignCenter)
+
+            edit_btn = QPushButton("Edit")
+            edit_btn.setFixedHeight(34); edit_btn.setFixedWidth(70)
+            edit_btn.setCursor(Qt.PointingHandCursor)
+            edit_btn.setStyleSheet("""
+                QPushButton {
+                    background: #EEF2FF; color: #4F46E5;
+                    border: none; border-radius: 6px;
+                    font-size: 12px; font-weight: 700;
+                }
+                QPushButton:hover { background: #4F46E5; color: white; }
+            """)
+            edit_btn.clicked.connect(lambda _, uid=uid: self.edit_user(uid))
+            al.addWidget(edit_btn)
+
+            del_btn = QPushButton("Delete")
+            del_btn.setFixedHeight(34); del_btn.setFixedWidth(80)
+            del_btn.setCursor(Qt.PointingHandCursor)
+            del_btn.setStyleSheet("""
+                QPushButton {
+                    background: #FEF2F2; color: #DC2626;
+                    border: none; border-radius: 6px;
+                    font-size: 12px; font-weight: 700;
+                }
+                QPushButton:hover { background: #DC2626; color: white; }
+            """)
+            del_btn.clicked.connect(lambda _, uid=uid, un=username: self.delete_user(uid, un))
+            al.addWidget(del_btn)
+
+            self.table.setCellWidget(r, 5, actions)
+
+        self.count_lbl.setText(f"{len(data)} users")
+
+    def add_user(self):
+        dlg = UserDialog(user_id=None, parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            self.load()
+            QMessageBox.information(self, "Success", "User created successfully.")
+
+    def edit_user(self, uid):
+        dlg = UserDialog(user_id=uid, parent=self)
+        if dlg.exec() == QDialog.Accepted:
+            self.load()
+            QMessageBox.information(self, "Success", "User updated successfully.")
+
+    def delete_user(self, uid, username):
+        if username == "admin":
+            QMessageBox.warning(self, "Not Allowed", "Cannot delete the primary admin account.")
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Delete User")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setText(f"<b>Delete user '@{username}'?</b>")
+        msg.setInformativeText(
+            "This action cannot be undone.\n"
+            "All sales made by this user will remain in the database."
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+
+        if msg.exec() != QMessageBox.Yes:
+            return
+
+        try:
+            with SessionLocal() as s:
+                u = s.get(User, uid)
+                if u:
+                    s.delete(u)
+                    s.commit()
+            self.load()
+            QMessageBox.information(self, "Deleted", f"User '{username}' deleted.")
+        except Exception as e:
+            QMessageBox.critical(self, "Delete Failed", str(e))
+
+
+# =========================================================
 # HELD SALES DIALOG
 # =========================================================
 class HeldSalesDialog(QDialog):
@@ -159,8 +678,6 @@ class HeldSalesDialog(QDialog):
         sub.setObjectName("DialogSub")
         sub.setStyleSheet(DIALOG_STYLE)
         layout.addWidget(sub)
-
-        layout.addSpacing(6)
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["REFERENCE", "DATE", "ITEMS", "TOTAL"])
@@ -265,7 +782,6 @@ class CheckoutDialog(QDialog):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
 
-        # Header
         header = QFrame()
         header.setStyleSheet("background: #FFFFFF; border-bottom: 1px solid #E2E8F0;")
         hl = QVBoxLayout(header)
@@ -283,7 +799,6 @@ class CheckoutDialog(QDialog):
         hl.addWidget(s)
         main.addWidget(header)
 
-        # Scrollable body
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
@@ -298,7 +813,6 @@ class CheckoutDialog(QDialog):
             }
             QScrollBar::handle:vertical:hover { background: #94A3B8; }
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }
         """)
 
         body = QWidget()
@@ -334,10 +848,7 @@ class CheckoutDialog(QDialog):
         v.addWidget(pl)
 
         self.pay_type = QComboBox()
-        self.pay_type.addItems([
-            "💵  Full Payment",
-            "📝  Partial Payment (Udhaar)"
-        ])
+        self.pay_type.addItems(["💵  Full Payment", "📝  Partial Payment (Udhaar)"])
         self.pay_type.setFixedHeight(50)
         self.pay_type.setStyleSheet(self._combo_style())
         self.pay_type.currentIndexChanged.connect(self._on_type_changed)
@@ -349,11 +860,8 @@ class CheckoutDialog(QDialog):
 
         self.method = QComboBox()
         self.method.addItems([
-            "💵  Cash",
-            "💳  Card",
-            "🏦  Bank Transfer",
-            "📱  Mobile Wallet",
-            "📋  Other"
+            "💵  Cash", "💳  Card", "🏦  Bank Transfer",
+            "📱  Mobile Wallet", "📋  Other"
         ])
         self.method.setFixedHeight(50)
         self.method.setStyleSheet(self._combo_style())
@@ -375,13 +883,6 @@ class CheckoutDialog(QDialog):
                 font-size: 16px; font-weight: 700; color: #0F172A;
             }
             QDoubleSpinBox:focus { border: 2px solid #4F46E5; }
-            QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {
-                width: 24px; background: #F1F5F9;
-                border: none; border-radius: 4px; margin: 4px;
-            }
-            QDoubleSpinBox::up-button:hover, QDoubleSpinBox::down-button:hover {
-                background: #4F46E5;
-            }
         """)
         self.cash.valueChanged.connect(self._update_change)
         v.addWidget(self.cash)
@@ -448,7 +949,6 @@ class CheckoutDialog(QDialog):
         scroll.setWidget(body)
         main.addWidget(scroll, 1)
 
-        # Footer
         footer = QFrame()
         footer.setStyleSheet("background: #FFFFFF; border-top: 1px solid #E2E8F0;")
         fl = QHBoxLayout(footer)
@@ -463,7 +963,7 @@ class CheckoutDialog(QDialog):
             QPushButton {
                 background: #FFFFFF; color: #0F172A;
                 border: 2px solid #E2E8F0; border-radius: 10px;
-                font-size: 14px; font-weight: 700; padding: 12px 20px;
+                font-size: 14px; font-weight: 700;
             }
             QPushButton:hover { background: #F8FAFC; border-color: #94A3B8; }
         """)
@@ -478,8 +978,7 @@ class CheckoutDialog(QDialog):
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                     stop:0 #10B981, stop:1 #059669);
                 color: #FFFFFF; border: none; border-radius: 10px;
-                font-size: 15px; font-weight: 800; letter-spacing: 0.5px;
-                padding: 12px 20px;
+                font-size: 15px; font-weight: 800;
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -548,14 +1047,14 @@ class CheckoutDialog(QDialog):
             change = max(0, val - self.total)
             self.chg_box.setStyleSheet("background: #ECFDF5; border-radius: 10px;")
             self.chg_title.setText("CHANGE")
-            self.chg_title.setStyleSheet("color: #059669; font-size: 12px; font-weight: 800; letter-spacing: 0.5px;")
+            self.chg_title.setStyleSheet("color: #059669; font-size: 12px; font-weight: 800;")
             self.chg_val.setStyleSheet("color: #059669; font-weight: 900; font-size: 20px;")
             self.chg_val.setText(money(change))
         else:
             remaining = max(0, self.total - val)
             self.chg_box.setStyleSheet("background: #FEF3C7; border-radius: 10px;")
             self.chg_title.setText("REMAINING (UDHAAR)")
-            self.chg_title.setStyleSheet("color: #92400E; font-size: 12px; font-weight: 800; letter-spacing: 0.5px;")
+            self.chg_title.setStyleSheet("color: #92400E; font-size: 12px; font-weight: 800;")
             self.chg_val.setStyleSheet("color: #92400E; font-weight: 900; font-size: 20px;")
             self.chg_val.setText(money(remaining))
 
@@ -1228,7 +1727,7 @@ class POSWidget(QWidget):
 
 
 # =========================================================
-# PRODUCTS PAGE (with proper Edit/Delete buttons + Bulk Delete + Select All)
+# PRODUCTS WIDGET
 # =========================================================
 class ProductsWidget(QWidget):
     def __init__(self):
@@ -1240,7 +1739,6 @@ class ProductsWidget(QWidget):
         root.setContentsMargins(24, 22, 24, 22)
         root.setSpacing(14)
 
-        # HEADER
         header = QHBoxLayout()
         title = QLabel("Products")
         title.setStyleSheet("font-size: 22px; font-weight: 900; color: #0F172A;")
@@ -1253,12 +1751,8 @@ class ProductsWidget(QWidget):
 
         self.selected_lbl = QLabel("")
         self.selected_lbl.setStyleSheet("""
-            color: #4F46E5;
-            font-size: 13px;
-            font-weight: 700;
-            padding: 8px 14px;
-            background: #EEF2FF;
-            border-radius: 6px;
+            color: #4F46E5; font-size: 13px; font-weight: 700;
+            padding: 8px 14px; background: #EEF2FF; border-radius: 6px;
         """)
         self.selected_lbl.setVisible(False)
         header.addWidget(self.selected_lbl)
@@ -1269,13 +1763,9 @@ class ProductsWidget(QWidget):
         self.select_all_btn.setVisible(False)
         self.select_all_btn.setStyleSheet("""
             QPushButton {
-                background: #FFFFFF;
-                color: #4F46E5;
-                border: 2px solid #4F46E5;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 8px 16px;
+                background: #FFFFFF; color: #4F46E5;
+                border: 2px solid #4F46E5; border-radius: 8px;
+                font-size: 13px; font-weight: 700; padding: 8px 16px;
             }
             QPushButton:hover { background: #EEF2FF; }
         """)
@@ -1288,18 +1778,11 @@ class ProductsWidget(QWidget):
         self.clear_sel_btn.setVisible(False)
         self.clear_sel_btn.setStyleSheet("""
             QPushButton {
-                background: #FFFFFF;
-                color: #64748B;
-                border: 2px solid #E2E8F0;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 8px 16px;
+                background: #FFFFFF; color: #64748B;
+                border: 2px solid #E2E8F0; border-radius: 8px;
+                font-size: 13px; font-weight: 700; padding: 8px 16px;
             }
-            QPushButton:hover {
-                background: #F8FAFC;
-                border-color: #94A3B8;
-            }
+            QPushButton:hover { background: #F8FAFC; border-color: #94A3B8; }
         """)
         self.clear_sel_btn.clicked.connect(self.clear_selection)
         header.addWidget(self.clear_sel_btn)
@@ -1310,13 +1793,9 @@ class ProductsWidget(QWidget):
         self.bulk_delete_btn.setVisible(False)
         self.bulk_delete_btn.setStyleSheet("""
             QPushButton {
-                background: #DC2626;
-                color: white;
-                border: none;
-                border-radius: 8px;
-                font-size: 13px;
-                font-weight: 700;
-                padding: 8px 18px;
+                background: #DC2626; color: white;
+                border: none; border-radius: 8px;
+                font-size: 13px; font-weight: 700; padding: 8px 18px;
             }
             QPushButton:hover { background: #B91C1C; }
         """)
@@ -1332,27 +1811,23 @@ class ProductsWidget(QWidget):
         imp = QPushButton("Import")
         imp.setProperty("variant", "secondary")
         imp.setFixedHeight(40)
-        imp.setCursor(Qt.PointingHandCursor)
         imp.clicked.connect(self.import_file)
         header.addWidget(imp)
 
         exp = QPushButton("Export")
         exp.setProperty("variant", "secondary")
         exp.setFixedHeight(40)
-        exp.setCursor(Qt.PointingHandCursor)
         exp.clicked.connect(self.export_file)
         header.addWidget(exp)
 
         root.addLayout(header)
 
-        # SEARCH
         self.search = QLineEdit()
         self.search.setPlaceholderText("🔍  Search products by name, barcode, or SKU...")
         self.search.setFixedHeight(44)
         self.search.textChanged.connect(self.load)
         root.addWidget(self.search)
 
-        # TABLE
         self.table = QTableWidget(0, 12)
         self.table.setHorizontalHeaderLabels([
             "SELECT", "ID", "PRODUCT", "BARCODE", "SKU",
@@ -1380,7 +1855,6 @@ class ProductsWidget(QWidget):
         self.table.setColumnWidth(11, 160)
 
         root.addWidget(self.table, 1)
-
         self.load()
 
     def load(self):
@@ -1405,7 +1879,6 @@ class ProductsWidget(QWidget):
             self.table.insertRow(r)
             self.table.setRowHeight(r, 56)
 
-            # CHECKBOX
             cb_widget = QWidget()
             cb_layout = QHBoxLayout(cb_widget)
             cb_layout.setContentsMargins(0, 0, 0, 0)
@@ -1415,18 +1888,13 @@ class ProductsWidget(QWidget):
             cb.setCursor(Qt.PointingHandCursor)
             cb.setStyleSheet("""
                 QCheckBox::indicator {
-                    width: 20px;
-                    height: 20px;
-                    border: 2px solid #CBD5E1;
-                    border-radius: 5px;
+                    width: 20px; height: 20px;
+                    border: 2px solid #CBD5E1; border-radius: 5px;
                     background: #FFFFFF;
                 }
-                QCheckBox::indicator:hover {
-                    border: 2px solid #4F46E5;
-                }
+                QCheckBox::indicator:hover { border: 2px solid #4F46E5; }
                 QCheckBox::indicator:checked {
-                    background: #4F46E5;
-                    border: 2px solid #4F46E5;
+                    background: #4F46E5; border: 2px solid #4F46E5;
                 }
             """)
             cb.stateChanged.connect(lambda state, pid=p.id: self._on_row_check(state, pid))
@@ -1434,45 +1902,32 @@ class ProductsWidget(QWidget):
             self.table.setCellWidget(r, 0, cb_widget)
             self.all_checkboxes[p.id] = cb
 
-            # ID
             id_item = QTableWidgetItem(str(p.id))
             id_item.setTextAlignment(Qt.AlignCenter)
             id_item.setForeground(QColor("#64748B"))
             self.table.setItem(r, 1, id_item)
 
-            # Product Name
             name_item = QTableWidgetItem(p.name)
-            fnt = name_item.font()
-            fnt.setBold(True)
-            name_item.setFont(fnt)
+            fnt = name_item.font(); fnt.setBold(True); name_item.setFont(fnt)
             self.table.setItem(r, 2, name_item)
 
-            # Barcode
             self.table.setItem(r, 3, QTableWidgetItem(p.barcode or "—"))
 
-            # SKU
             sku_item = QTableWidgetItem(p.sku or "—")
             sku_item.setForeground(QColor("#64748B"))
             self.table.setItem(r, 4, sku_item)
 
-            # Buy
             self.table.setItem(r, 5, QTableWidgetItem(money(p.purchase_price)))
 
-            # Retail
             retail_item = QTableWidgetItem(money(p.selling_price))
             retail_item.setForeground(QColor("#0F172A"))
-            fnt2 = retail_item.font()
-            fnt2.setBold(True)
-            retail_item.setFont(fnt2)
+            fnt2 = retail_item.font(); fnt2.setBold(True); retail_item.setFont(fnt2)
             self.table.setItem(r, 6, retail_item)
 
-            # Wholesale
             if p.wholesale_price > 0:
                 w_item = QTableWidgetItem(money(p.wholesale_price))
                 w_item.setForeground(QColor("#059669"))
-                fnt3 = w_item.font()
-                fnt3.setBold(True)
-                w_item.setFont(fnt3)
+                fnt3 = w_item.font(); fnt3.setBold(True); w_item.setFont(fnt3)
                 self.table.setItem(r, 7, w_item)
             else:
                 w_item = QTableWidgetItem("—")
@@ -1480,7 +1935,6 @@ class ProductsWidget(QWidget):
                 w_item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 7, w_item)
 
-            # W Qty
             if p.wholesale_min_qty > 0:
                 wq_item = QTableWidgetItem(f"{p.wholesale_min_qty:.0f}+")
                 wq_item.setForeground(QColor("#059669"))
@@ -1492,30 +1946,23 @@ class ProductsWidget(QWidget):
                 wq_item.setTextAlignment(Qt.AlignCenter)
                 self.table.setItem(r, 8, wq_item)
 
-            # Stock
             stock_item = QTableWidgetItem(f"{p.stock_quantity:.0f}")
             stock_item.setTextAlignment(Qt.AlignCenter)
             if p.stock_quantity <= 0:
                 stock_item.setForeground(QColor("#DC2626"))
-                fnt4 = stock_item.font()
-                fnt4.setBold(True)
-                stock_item.setFont(fnt4)
+                fnt4 = stock_item.font(); fnt4.setBold(True); stock_item.setFont(fnt4)
             elif p.stock_quantity <= p.minimum_stock:
                 stock_item.setForeground(QColor("#D97706"))
-                fnt4 = stock_item.font()
-                fnt4.setBold(True)
-                stock_item.setFont(fnt4)
+                fnt4 = stock_item.font(); fnt4.setBold(True); stock_item.setFont(fnt4)
             else:
                 stock_item.setForeground(QColor("#059669"))
             self.table.setItem(r, 9, stock_item)
 
-            # Min
             min_item = QTableWidgetItem(f"{p.minimum_stock:.0f}")
             min_item.setTextAlignment(Qt.AlignCenter)
             min_item.setForeground(QColor("#64748B"))
             self.table.setItem(r, 10, min_item)
 
-            # ACTIONS (Edit + Delete)
             actions = QWidget()
             al = QHBoxLayout(actions)
             al.setContentsMargins(4, 4, 4, 4)
@@ -1523,45 +1970,29 @@ class ProductsWidget(QWidget):
             al.setAlignment(Qt.AlignCenter)
 
             edit_btn = QPushButton("Edit")
-            edit_btn.setFixedHeight(34)
-            edit_btn.setFixedWidth(62)
+            edit_btn.setFixedHeight(34); edit_btn.setFixedWidth(62)
             edit_btn.setCursor(Qt.PointingHandCursor)
             edit_btn.setStyleSheet("""
                 QPushButton {
-                    background: #EEF2FF;
-                    color: #4F46E5;
-                    border: none;
-                    border-radius: 6px;
-                    font-size: 12px;
-                    font-weight: 700;
-                    padding: 6px 10px;
+                    background: #EEF2FF; color: #4F46E5;
+                    border: none; border-radius: 6px;
+                    font-size: 12px; font-weight: 700;
                 }
-                QPushButton:hover {
-                    background: #4F46E5;
-                    color: white;
-                }
+                QPushButton:hover { background: #4F46E5; color: white; }
             """)
             edit_btn.clicked.connect(lambda _, pid=p.id: self.edit_product(pid))
             al.addWidget(edit_btn)
 
             del_btn = QPushButton("Delete")
-            del_btn.setFixedHeight(34)
-            del_btn.setFixedWidth(70)
+            del_btn.setFixedHeight(34); del_btn.setFixedWidth(70)
             del_btn.setCursor(Qt.PointingHandCursor)
             del_btn.setStyleSheet("""
                 QPushButton {
-                    background: #FEF2F2;
-                    color: #DC2626;
-                    border: none;
-                    border-radius: 6px;
-                    font-size: 12px;
-                    font-weight: 700;
-                    padding: 6px 10px;
+                    background: #FEF2F2; color: #DC2626;
+                    border: none; border-radius: 6px;
+                    font-size: 12px; font-weight: 700;
                 }
-                QPushButton:hover {
-                    background: #DC2626;
-                    color: white;
-                }
+                QPushButton:hover { background: #DC2626; color: white; }
             """)
             del_btn.clicked.connect(lambda _, pid=p.id: self.delete_product(pid))
             al.addWidget(del_btn)
@@ -1570,7 +2001,6 @@ class ProductsWidget(QWidget):
 
         self.count_lbl.setText(f"{len(ps)} products")
 
-    # SELECTION
     def _on_row_check(self, state, pid):
         if state == 2:
             self.selected_ids.add(pid)
@@ -1581,7 +2011,6 @@ class ProductsWidget(QWidget):
     def _update_bulk_bar(self):
         count = len(self.selected_ids)
         total = self.table.rowCount()
-
         if count > 0:
             self.selected_lbl.setText(f"●  {count} selected")
             self.selected_lbl.setVisible(True)
@@ -1610,7 +2039,6 @@ class ProductsWidget(QWidget):
         self.selected_ids.clear()
         self._update_bulk_bar()
 
-    # BULK DELETE
     def bulk_delete(self):
         if not self.selected_ids:
             QMessageBox.information(self, "No Selection", "Please select products to delete.")
@@ -1623,8 +2051,7 @@ class ProductsWidget(QWidget):
         msg.setIcon(QMessageBox.Warning)
         msg.setText(f"<b>Delete {count} products?</b>")
         msg.setInformativeText(
-            "This will permanently remove the selected products.\n\n"
-            "Products with sales history will be marked as inactive instead.\n\n"
+            "Products with sales history will be marked as inactive.\n\n"
             "⚠️  This action cannot be undone."
         )
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
@@ -1641,7 +2068,6 @@ class ProductsWidget(QWidget):
                     p = s.get(Product, pid)
                     if not p:
                         continue
-
                     has_sales = s.query(SaleItem).filter_by(product_id=pid).first()
                     if has_sales:
                         p.active = False
@@ -1649,21 +2075,18 @@ class ProductsWidget(QWidget):
                     else:
                         s.delete(p)
                         deleted += 1
-
                 s.commit()
 
             self.selected_ids.clear()
             self.load()
 
-            info_msg = f"✅ {deleted} products deleted successfully."
+            info_msg = f"✅ {deleted} products deleted."
             if skipped > 0:
-                info_msg += f"\n\n⚠️  {skipped} products marked as inactive (they have sales history)."
+                info_msg += f"\n\n⚠️  {skipped} products marked inactive (sales history)."
             QMessageBox.information(self, "Bulk Delete Complete", info_msg)
-
         except Exception as e:
             QMessageBox.critical(self, "Delete Failed", str(e))
 
-    # SINGLE DELETE
     def delete_product(self, pid):
         with SessionLocal() as s:
             p = s.get(Product, pid)
@@ -1676,10 +2099,6 @@ class ProductsWidget(QWidget):
         msg.setWindowTitle("Delete Product")
         msg.setIcon(QMessageBox.Warning)
         msg.setText(f"<b>Delete '{name}'?</b>")
-        msg.setInformativeText(
-            "This will permanently remove the product.\n\n"
-            "⚠️  This action cannot be undone."
-        )
         msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg.setDefaultButton(QMessageBox.No)
 
@@ -1691,31 +2110,24 @@ class ProductsWidget(QWidget):
                 p = s.get(Product, pid)
                 if not p:
                     return
-
                 has_sales = s.query(SaleItem).filter_by(product_id=pid).first()
                 if has_sales:
                     p.active = False
                     s.commit()
-                    QMessageBox.information(
-                        self, "Marked Inactive",
-                        f"'{name}' has sales history, so it was marked as inactive.\n\n"
-                        "It won't appear in POS but its sales history is preserved."
-                    )
+                    QMessageBox.information(self, "Marked Inactive",
+                                            f"'{name}' has sales history, marked inactive.")
                 else:
                     s.delete(p)
                     s.commit()
-                    QMessageBox.information(self, "Deleted", f"'{name}' deleted successfully.")
-
+                    QMessageBox.information(self, "Deleted", f"'{name}' deleted.")
             self.load()
         except Exception as e:
             QMessageBox.critical(self, "Delete Failed", str(e))
 
-    # EDIT PRODUCT
     def edit_product(self, pid):
         with SessionLocal() as s:
             p = s.get(Product, pid)
             if not p:
-                QMessageBox.warning(self, "Not Found", "Product not found.")
                 return
             data = {
                 "name": p.name, "barcode": p.barcode, "sku": p.sku,
@@ -1728,9 +2140,8 @@ class ProductsWidget(QWidget):
             }
 
         d = QDialog(self)
-        d.setWindowTitle(f"Edit Product — {data['name']}")
-        d.setFixedWidth(520)
-        d.setFixedHeight(720)
+        d.setWindowTitle(f"Edit Product")
+        d.setFixedWidth(520); d.setFixedHeight(720)
         d.setStyleSheet(DIALOG_STYLE)
 
         main = QVBoxLayout(d)
@@ -1742,36 +2153,21 @@ class ProductsWidget(QWidget):
         hl = QVBoxLayout(h)
         hl.setContentsMargins(28, 22, 28, 16)
         t = QLabel("Edit Product")
-        t.setObjectName("DialogTitle")
-        t.setStyleSheet(DIALOG_STYLE)
+        t.setObjectName("DialogTitle"); t.setStyleSheet(DIALOG_STYLE)
         hl.addWidget(t)
         s_lbl = QLabel(f"Editing: {data['name']}")
-        s_lbl.setObjectName("DialogSub")
-        s_lbl.setStyleSheet(DIALOG_STYLE)
+        s_lbl.setObjectName("DialogSub"); s_lbl.setStyleSheet(DIALOG_STYLE)
         hl.addWidget(s_lbl)
         main.addWidget(h)
 
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("""
-            QScrollArea { border: none; background: #FFFFFF; }
-            QScrollBar:vertical {
-                background: #F1F5F9; width: 10px; border-radius: 5px;
-                margin: 4px 2px 4px 2px;
-            }
-            QScrollBar::handle:vertical {
-                background: #CBD5E1; border-radius: 5px; min-height: 40px;
-            }
-            QScrollBar::handle:vertical:hover { background: #94A3B8; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-        """)
+        scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: #FFFFFF; }")
 
         body = QWidget()
         body.setStyleSheet("background: #FFFFFF;")
         bv = QVBoxLayout(body)
-        bv.setContentsMargins(28, 20, 28, 20)
-        bv.setSpacing(12)
+        bv.setContentsMargins(28, 20, 28, 20); bv.setSpacing(12)
 
         fields = {}
 
@@ -1786,7 +2182,7 @@ class ProductsWidget(QWidget):
                 QLineEdit {
                     background: #FFFFFF; border: 2px solid #CBD5E1;
                     border-radius: 10px; padding: 10px 14px;
-                    font-size: 13px; color: #0F172A;
+                    font-size: 13px;
                 }
                 QLineEdit:focus { border: 2px solid #4F46E5; }
             """)
@@ -1805,10 +2201,10 @@ class ProductsWidget(QWidget):
         """)
         bv.addWidget(section)
 
-        add_field("Purchase Price (Rs.)", "purchase_price", f"{data['purchase_price']:.0f}")
-        add_field("Retail Price (Rs.) *", "selling_price", f"{data['selling_price']:.0f}")
-        add_field("Wholesale Price (Rs.)", "wholesale_price", f"{data['wholesale_price']:.0f}")
-        add_field("Wholesale Min Quantity", "wholesale_min_qty", f"{data['wholesale_min_qty']:.0f}")
+        add_field("Purchase Price", "purchase_price", f"{data['purchase_price']:.0f}")
+        add_field("Retail Price *", "selling_price", f"{data['selling_price']:.0f}")
+        add_field("Wholesale Price", "wholesale_price", f"{data['wholesale_price']:.0f}")
+        add_field("Wholesale Min Qty", "wholesale_min_qty", f"{data['wholesale_min_qty']:.0f}")
 
         section2 = QLabel("📦  STOCK")
         section2.setStyleSheet("""
@@ -1828,20 +2224,16 @@ class ProductsWidget(QWidget):
         footer = QFrame()
         footer.setStyleSheet("background: #FFFFFF; border-top: 1px solid #E2E8F0;")
         fl = QHBoxLayout(footer)
-        fl.setContentsMargins(28, 16, 28, 20)
-        fl.setSpacing(12)
+        fl.setContentsMargins(28, 16, 28, 20); fl.setSpacing(12)
 
         cancel = QPushButton("Cancel")
         cancel.setProperty("variant", "secondary")
-        cancel.setFixedHeight(48)
-        cancel.setFixedWidth(120)
-        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.setFixedHeight(48); cancel.setFixedWidth(120)
         cancel.clicked.connect(d.reject)
         fl.addWidget(cancel)
 
         save = QPushButton("💾  Save Changes")
         save.setFixedHeight(48)
-        save.setCursor(Qt.PointingHandCursor)
         save.clicked.connect(d.accept)
         fl.addWidget(save, 1)
 
@@ -1853,14 +2245,13 @@ class ProductsWidget(QWidget):
         try:
             name = fields["name"].text().strip()
             if not name:
-                QMessageBox.warning(self, "Missing Info", "Product name is required.")
+                QMessageBox.warning(self, "Missing Info", "Product name required.")
                 return
 
             with SessionLocal() as s:
                 p = s.get(Product, pid)
                 if not p:
                     return
-
                 p.name = name
                 p.barcode = fields["barcode"].text().strip()
                 p.sku = fields["sku"].text().strip()
@@ -1870,62 +2261,42 @@ class ProductsWidget(QWidget):
                 p.wholesale_min_qty = float(fields["wholesale_min_qty"].text() or 0)
                 p.stock_quantity = float(fields["stock_quantity"].text() or 0)
                 p.minimum_stock = float(fields["minimum_stock"].text() or 0)
-
                 s.commit()
 
             self.load()
-            QMessageBox.information(self, "Updated", f"'{name}' updated successfully.")
-
+            QMessageBox.information(self, "Updated", f"'{name}' updated.")
         except Exception as e:
             QMessageBox.critical(self, "Update Failed", str(e))
 
-    # ADD PRODUCT
     def add(self):
         d = QDialog(self)
         d.setWindowTitle("Add Product")
-        d.setFixedWidth(520)
-        d.setFixedHeight(720)
+        d.setFixedWidth(520); d.setFixedHeight(720)
         d.setStyleSheet(DIALOG_STYLE)
 
         main = QVBoxLayout(d)
-        main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(0)
+        main.setContentsMargins(0, 0, 0, 0); main.setSpacing(0)
 
         h = QFrame()
         h.setStyleSheet("background: #FFFFFF; border-bottom: 1px solid #E2E8F0;")
         hl = QVBoxLayout(h)
         hl.setContentsMargins(28, 22, 28, 16)
         t = QLabel("Add Product")
-        t.setObjectName("DialogTitle")
-        t.setStyleSheet(DIALOG_STYLE)
+        t.setObjectName("DialogTitle"); t.setStyleSheet(DIALOG_STYLE)
         hl.addWidget(t)
         s = QLabel("Enter product details and pricing")
-        s.setObjectName("DialogSub")
-        s.setStyleSheet(DIALOG_STYLE)
+        s.setObjectName("DialogSub"); s.setStyleSheet(DIALOG_STYLE)
         hl.addWidget(s)
         main.addWidget(h)
 
         scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setStyleSheet("""
-            QScrollArea { border: none; background: #FFFFFF; }
-            QScrollBar:vertical {
-                background: #F1F5F9; width: 10px; border-radius: 5px;
-                margin: 4px 2px 4px 2px;
-            }
-            QScrollBar::handle:vertical {
-                background: #CBD5E1; border-radius: 5px; min-height: 40px;
-            }
-            QScrollBar::handle:vertical:hover { background: #94A3B8; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-        """)
+        scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: #FFFFFF; }")
 
         body = QWidget()
         body.setStyleSheet("background: #FFFFFF;")
         bv = QVBoxLayout(body)
-        bv.setContentsMargins(28, 20, 28, 20)
-        bv.setSpacing(12)
+        bv.setContentsMargins(28, 20, 28, 20); bv.setSpacing(12)
 
         fields = {}
 
@@ -1940,7 +2311,7 @@ class ProductsWidget(QWidget):
                 QLineEdit {
                     background: #FFFFFF; border: 2px solid #CBD5E1;
                     border-radius: 10px; padding: 10px 14px;
-                    font-size: 13px; color: #0F172A;
+                    font-size: 13px;
                 }
                 QLineEdit:focus { border: 2px solid #4F46E5; }
             """)
@@ -1959,10 +2330,10 @@ class ProductsWidget(QWidget):
         """)
         bv.addWidget(section)
 
-        add_field("Purchase Price (Rs.)", "purchase_price", "Cost price")
-        add_field("Retail Price (Rs.) *", "selling_price", "Regular selling price")
-        add_field("Wholesale Price (Rs.)", "wholesale_price", "Leave 0 if not applicable")
-        add_field("Wholesale Min Quantity", "wholesale_min_qty", "e.g., 6")
+        add_field("Purchase Price", "purchase_price", "Cost price")
+        add_field("Retail Price *", "selling_price", "Regular selling price")
+        add_field("Wholesale Price", "wholesale_price", "Leave 0 if not applicable")
+        add_field("Wholesale Min Qty", "wholesale_min_qty", "e.g., 6")
 
         section2 = QLabel("📦  STOCK")
         section2.setStyleSheet("""
@@ -1982,20 +2353,16 @@ class ProductsWidget(QWidget):
         footer = QFrame()
         footer.setStyleSheet("background: #FFFFFF; border-top: 1px solid #E2E8F0;")
         fl = QHBoxLayout(footer)
-        fl.setContentsMargins(28, 16, 28, 20)
-        fl.setSpacing(12)
+        fl.setContentsMargins(28, 16, 28, 20); fl.setSpacing(12)
 
         cancel = QPushButton("Cancel")
         cancel.setProperty("variant", "secondary")
-        cancel.setFixedHeight(48)
-        cancel.setFixedWidth(120)
-        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.setFixedHeight(48); cancel.setFixedWidth(120)
         cancel.clicked.connect(d.reject)
         fl.addWidget(cancel)
 
         save = QPushButton("💾  Save Product")
         save.setFixedHeight(48)
-        save.setCursor(Qt.PointingHandCursor)
         save.clicked.connect(d.accept)
         fl.addWidget(save, 1)
 
@@ -2007,7 +2374,7 @@ class ProductsWidget(QWidget):
         try:
             name = fields["name"].text().strip()
             if not name:
-                QMessageBox.warning(self, "Missing Info", "Product name is required.")
+                QMessageBox.warning(self, "Missing Info", "Product name required.")
                 return
 
             with SessionLocal() as s:
@@ -2024,11 +2391,10 @@ class ProductsWidget(QWidget):
                 ))
                 s.commit()
             self.load()
-            QMessageBox.information(self, "Added", f"'{name}' added successfully.")
+            QMessageBox.information(self, "Added", f"'{name}' added.")
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
 
-    # IMPORT / EXPORT
     def import_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Import", "", "Excel (*.xlsx);;CSV (*.csv)")
         if not path:
@@ -2065,7 +2431,7 @@ class ProductsWidget(QWidget):
                         ))
                 s.commit()
             self.load()
-            QMessageBox.information(self, "Import Complete", "Products imported successfully.")
+            QMessageBox.information(self, "Import Complete", "Products imported.")
         except Exception as e:
             QMessageBox.critical(self, "Import Failed", str(e))
 
@@ -2077,22 +2443,16 @@ class ProductsWidget(QWidget):
             ps = s.query(Product).all()
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             w = csv.writer(f)
-            w.writerow([
-                "name", "barcode", "sku", "purchase_price", "selling_price",
-                "wholesale_price", "wholesale_min_qty",
-                "stock_quantity", "minimum_stock"
-            ])
+            w.writerow(["name", "barcode", "sku", "purchase_price", "selling_price",
+                        "wholesale_price", "wholesale_min_qty", "stock_quantity", "minimum_stock"])
             for p in ps:
-                w.writerow([
-                    p.name, p.barcode, p.sku, p.purchase_price, p.selling_price,
-                    p.wholesale_price, p.wholesale_min_qty,
-                    p.stock_quantity, p.minimum_stock
-                ])
+                w.writerow([p.name, p.barcode, p.sku, p.purchase_price, p.selling_price,
+                            p.wholesale_price, p.wholesale_min_qty, p.stock_quantity, p.minimum_stock])
         QMessageBox.information(self, "Export Complete", "Products exported.")
 
 
 # =========================================================
-# SALES PAGE
+# SALES WIDGET
 # =========================================================
 class SalesWidget(QWidget):
     def __init__(self):
@@ -2120,7 +2480,6 @@ class SalesWidget(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         l.addWidget(self.table, 1)
         self.load()
 
@@ -2133,27 +2492,21 @@ class SalesWidget(QWidget):
             self.table.insertRow(r)
             self.table.setRowHeight(r, 46)
             vals = [
-                sale.invoice,
-                sale.created_at.strftime("%d-%m-%Y %H:%M"),
-                user.username,
-                money(sale.subtotal),
-                money(sale.total),
-                sale.payment_method,
-                money(sale.cash_received),
+                sale.invoice, sale.created_at.strftime("%d-%m-%Y %H:%M"),
+                user.username, money(sale.subtotal), money(sale.total),
+                sale.payment_method, money(sale.cash_received),
                 money(sale.credit_amount) if sale.credit_amount > 0 else "—",
             ]
             for c, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 if c == 7 and sale.credit_amount > 0:
                     item.setForeground(QColor("#D97706"))
-                    fnt = item.font()
-                    fnt.setBold(True)
-                    item.setFont(fnt)
+                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
                 self.table.setItem(r, c, item)
 
 
 # =========================================================
-# INVENTORY PAGE
+# INVENTORY WIDGET
 # =========================================================
 class InventoryWidget(QWidget):
     def __init__(self):
@@ -2179,7 +2532,6 @@ class InventoryWidget(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         l.addWidget(self.table, 1)
         self.load()
 
@@ -2203,14 +2555,12 @@ class InventoryWidget(QWidget):
                 item = QTableWidgetItem(v)
                 if c == 3:
                     item.setForeground(QColor(color))
-                    fnt = item.font()
-                    fnt.setBold(True)
-                    item.setFont(fnt)
+                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
                 self.table.setItem(r, c, item)
 
 
 # =========================================================
-# CREDITS / UDHAAR PAGE
+# CREDITS WIDGET
 # =========================================================
 class CreditsWidget(QWidget):
     def __init__(self):
@@ -2252,9 +2602,7 @@ class CreditsWidget(QWidget):
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.verticalHeader().setVisible(False)
         self.table.setShowGrid(False)
-        self.table.setSelectionBehavior(QTableWidget.SelectRows)
         l.addWidget(self.table, 1)
-
         self.load()
 
     def load(self):
@@ -2279,20 +2627,15 @@ class CreditsWidget(QWidget):
         for label, val, color in stats:
             card = QFrame()
             card.setStyleSheet("""
-                QFrame {
-                    background: #FFFFFF;
-                    border: 1px solid #E2E8F0;
-                    border-radius: 12px;
-                }
+                QFrame { background: #FFFFFF; border: 1px solid #E2E8F0; border-radius: 12px; }
             """)
             cl = QVBoxLayout(card)
-            cl.setContentsMargins(18, 14, 18, 14)
-            cl.setSpacing(4)
+            cl.setContentsMargins(18, 14, 18, 14); cl.setSpacing(4)
             lbl = QLabel(label.upper())
-            lbl.setStyleSheet("color: #64748B; font-size: 11px; font-weight: 800; letter-spacing: 0.8px; background: transparent;")
+            lbl.setStyleSheet("color: #64748B; font-size: 11px; font-weight: 800;")
             cl.addWidget(lbl)
             val_lbl = QLabel(val)
-            val_lbl.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: 900; background: transparent;")
+            val_lbl.setStyleSheet(f"color: {color}; font-size: 24px; font-weight: 900;")
             cl.addWidget(val_lbl)
             self.stats_layout.addWidget(card)
 
@@ -2311,39 +2654,27 @@ class CreditsWidget(QWidget):
             r = self.table.rowCount()
             self.table.insertRow(r)
             self.table.setRowHeight(r, 56)
-
-            vals = [
-                c.name, c.phone,
-                money(c.total_credit), money(c.total_paid), money(c.balance)
-            ]
+            vals = [c.name, c.phone, money(c.total_credit), money(c.total_paid), money(c.balance)]
             for col, v in enumerate(vals):
                 item = QTableWidgetItem(v)
                 if col == 4:
-                    if c.balance > 0:
-                        item.setForeground(QColor("#DC2626"))
-                    else:
-                        item.setForeground(QColor("#059669"))
-                    fnt = item.font()
-                    fnt.setBold(True)
-                    item.setFont(fnt)
+                    item.setForeground(QColor("#DC2626" if c.balance > 0 else "#059669"))
+                    fnt = item.font(); fnt.setBold(True); item.setFont(fnt)
                 self.table.setItem(r, col, item)
 
             actions = QWidget()
             al = QHBoxLayout(actions)
-            al.setContentsMargins(4, 4, 4, 4)
-            al.setSpacing(6)
+            al.setContentsMargins(4, 4, 4, 4); al.setSpacing(6)
 
             view = QPushButton("View")
             view.setProperty("variant", "secondary")
             view.setFixedHeight(36)
-            view.setCursor(Qt.PointingHandCursor)
             view.clicked.connect(lambda _, cid=c.id: self.view_customer(cid))
             al.addWidget(view)
 
             pay = QPushButton("Receive")
             pay.setProperty("variant", "success")
             pay.setFixedHeight(36)
-            pay.setCursor(Qt.PointingHandCursor)
             pay.clicked.connect(lambda _, cid=c.id: self.receive_payment(cid))
             al.addWidget(pay)
 
@@ -2353,46 +2684,41 @@ class CreditsWidget(QWidget):
         d = QDialog(self)
         d.setWindowTitle("New Credit Customer")
         d.setFixedWidth(420)
-        d.setStyleSheet(CREDIT_DIALOG_STYLE)
+        d.setStyleSheet(DIALOG_STYLE)
         v = QVBoxLayout(d)
-        v.setContentsMargins(24, 24, 24, 24)
-        v.setSpacing(12)
+        v.setContentsMargins(24, 24, 24, 24); v.setSpacing(12)
 
         t = QLabel("Add Credit Customer")
         t.setStyleSheet("font-size: 20px; font-weight: 800; color: #0F172A;")
         v.addWidget(t)
 
-        for label, attr in [("Name *", "name"), ("Phone *", "phone"),
-                            ("Address", "address"), ("Notes", "notes")]:
+        fields = {}
+        for label in ["Name *", "Phone *", "Address", "Notes"]:
             lbl = QLabel(label)
             lbl.setStyleSheet("color: #334155; font-size: 12px; font-weight: 700;")
             v.addWidget(lbl)
-            w = QLineEdit()
-            w.setFixedHeight(42)
-            setattr(d, attr, w)
-            v.addWidget(w)
+            w = QLineEdit(); w.setFixedHeight(42)
+            v.addWidget(w); fields[label] = w
 
-        b = QPushButton("Save Customer")
-        b.setFixedHeight(46)
-        b.clicked.connect(d.accept)
-        v.addWidget(b)
+        b = QPushButton("Save Customer"); b.setFixedHeight(46)
+        b.clicked.connect(d.accept); v.addWidget(b)
 
         if d.exec() != QDialog.Accepted:
             return
-        if not d.name.text().strip() or not d.phone.text().strip():
-            QMessageBox.warning(self, "Missing Info", "Name and phone are required.")
+        name = fields["Name *"].text().strip()
+        phone = fields["Phone *"].text().strip()
+        if not name or not phone:
+            QMessageBox.warning(self, "Missing Info", "Name and phone required.")
             return
 
         with SessionLocal() as s:
-            existing = s.query(CreditCustomer).filter_by(phone=d.phone.text().strip()).first()
-            if existing:
-                QMessageBox.warning(self, "Duplicate", "Customer with this phone already exists.")
+            if s.query(CreditCustomer).filter_by(phone=phone).first():
+                QMessageBox.warning(self, "Duplicate", "Customer with this phone exists.")
                 return
             s.add(CreditCustomer(
-                name=d.name.text().strip(),
-                phone=d.phone.text().strip(),
-                address=d.address.text().strip(),
-                notes=d.notes.text().strip(),
+                name=name, phone=phone,
+                address=fields["Address"].text().strip(),
+                notes=fields["Notes"].text().strip(),
             ))
             s.commit()
         self.load()
@@ -2410,8 +2736,7 @@ class CreditsWidget(QWidget):
             d.setStyleSheet(DIALOG_STYLE)
 
             v = QVBoxLayout(d)
-            v.setContentsMargins(24, 24, 24, 24)
-            v.setSpacing(12)
+            v.setContentsMargins(24, 24, 24, 24); v.setSpacing(12)
 
             name = QLabel(c.name)
             name.setStyleSheet("font-size: 22px; font-weight: 900; color: #0F172A;")
@@ -2420,8 +2745,6 @@ class CreditsWidget(QWidget):
             info = QLabel(f"📞 {c.phone}    📍 {c.address or 'No address'}")
             info.setStyleSheet("color: #64748B; font-size: 13px;")
             v.addWidget(info)
-
-            v.addSpacing(8)
 
             boxes = QHBoxLayout()
             for label, val, bg, fg in [
@@ -2432,56 +2755,36 @@ class CreditsWidget(QWidget):
                 box = QFrame()
                 box.setStyleSheet(f"background: {bg}; border-radius: 10px;")
                 bl = QVBoxLayout(box)
-                bl.setContentsMargins(14, 12, 14, 12)
-                bl.setSpacing(3)
-                lbl = QLabel(label)
-                lbl.setStyleSheet(f"color: {fg}; font-size: 10px; font-weight: 800; letter-spacing: 1px;")
-                bl.addWidget(lbl)
-                val_lbl = QLabel(val)
-                val_lbl.setStyleSheet(f"color: {fg}; font-size: 18px; font-weight: 900;")
-                bl.addWidget(val_lbl)
+                bl.setContentsMargins(14, 12, 14, 12); bl.setSpacing(3)
+                bl.addWidget(QLabel(f"<span style='color:{fg};font-size:10px;font-weight:800;'>{label}</span>"))
+                vl = QLabel(val)
+                vl.setStyleSheet(f"color: {fg}; font-size: 18px; font-weight: 900;")
+                bl.addWidget(vl)
                 boxes.addWidget(box)
             v.addLayout(boxes)
-
-            v.addSpacing(8)
-
-            tlbl = QLabel("TRANSACTION HISTORY")
-            tlbl.setStyleSheet("color: #64748B; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-            v.addWidget(tlbl)
 
             table = QTableWidget(0, 4)
             table.setHorizontalHeaderLabels(["DATE", "TYPE", "AMOUNT", "BALANCE"])
             table.horizontalHeader().setStretchLastSection(True)
             table.verticalHeader().setVisible(False)
             table.setShowGrid(False)
-            table.setRowCount(0)
 
             for t in transactions:
                 r = table.rowCount()
-                table.insertRow(r)
-                table.setRowHeight(r, 44)
-                vals = [
-                    t.created_at.strftime("%d-%m-%Y %H:%M"),
-                    "Udhaar" if t.type == "credit" else "Payment",
-                    money(t.amount),
-                    money(t.balance_after),
-                ]
+                table.insertRow(r); table.setRowHeight(r, 44)
+                vals = [t.created_at.strftime("%d-%m-%Y %H:%M"),
+                        "Udhaar" if t.type == "credit" else "Payment",
+                        money(t.amount), money(t.balance_after)]
                 for col, val in enumerate(vals):
                     item = QTableWidgetItem(val)
                     if col == 1:
-                        if t.type == "credit":
-                            item.setForeground(QColor("#DC2626"))
-                        else:
-                            item.setForeground(QColor("#059669"))
+                        item.setForeground(QColor("#DC2626" if t.type == "credit" else "#059669"))
                     table.setItem(r, col, item)
 
             v.addWidget(table, 1)
 
-            close = QPushButton("Close")
-            close.setFixedHeight(46)
-            close.clicked.connect(d.accept)
-            v.addWidget(close)
-
+            close = QPushButton("Close"); close.setFixedHeight(46)
+            close.clicked.connect(d.accept); v.addWidget(close)
             d.exec()
 
     def receive_payment(self, cid):
@@ -2489,115 +2792,93 @@ class CreditsWidget(QWidget):
             c = s.get(CreditCustomer, cid)
             if not c:
                 return
-            name = c.name
-            phone = c.phone
-            balance = c.balance
+            name, phone, balance = c.name, c.phone, c.balance
 
         if balance <= 0:
             QMessageBox.information(self, "No Balance", f"{name} has no outstanding balance.")
             return
 
         d = QDialog(self)
-        d.setWindowTitle(f"Receive Payment — {name}")
+        d.setWindowTitle(f"Receive Payment")
         d.setFixedWidth(440)
-        d.setStyleSheet(CREDIT_DIALOG_STYLE)
-
+        d.setStyleSheet(DIALOG_STYLE)
         v = QVBoxLayout(d)
-        v.setContentsMargins(24, 24, 24, 24)
-        v.setSpacing(12)
+        v.setContentsMargins(24, 24, 24, 24); v.setSpacing(12)
 
         t = QLabel("Receive Payment")
         t.setStyleSheet("font-size: 20px; font-weight: 800; color: #0F172A;")
         v.addWidget(t)
-
-        s_lbl = QLabel(f"{name}  •  {phone}")
-        s_lbl.setStyleSheet("color: #64748B; font-size: 12px;")
-        v.addWidget(s_lbl)
-
-        v.addSpacing(6)
+        v.addWidget(QLabel(f"{name} • {phone}"))
 
         box = QFrame()
         box.setStyleSheet("background: #FEF3C7; border-radius: 10px;")
-        bl = QVBoxLayout(box)
-        bl.setContentsMargins(16, 12, 16, 12)
-        bl.setSpacing(3)
-        lbl = QLabel("OUTSTANDING BALANCE")
-        lbl.setStyleSheet("color: #92400E; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
-        bl.addWidget(lbl)
-        val = QLabel(money(balance))
-        val.setStyleSheet("color: #92400E; font-size: 22px; font-weight: 900;")
-        bl.addWidget(val)
+        bl = QVBoxLayout(box); bl.setContentsMargins(16, 12, 16, 12)
+        bl.addWidget(QLabel("<span style='color:#92400E;font-size:11px;font-weight:800;'>OUTSTANDING BALANCE</span>"))
+        vl = QLabel(money(balance))
+        vl.setStyleSheet("color: #92400E; font-size: 22px; font-weight: 900;")
+        bl.addWidget(vl)
         v.addWidget(box)
 
-        v.addSpacing(6)
-
-        pl = QLabel("PAYMENT AMOUNT")
-        pl.setStyleSheet("color: #334155; font-size: 12px; font-weight: 700;")
-        v.addWidget(pl)
-
+        v.addWidget(QLabel("PAYMENT AMOUNT"))
         amount = QDoubleSpinBox()
-        amount.setMaximum(999999999)
-        amount.setDecimals(2)
-        amount.setValue(balance)
-        amount.setFixedHeight(46)
-        amount.setStyleSheet("font-size: 16px; font-weight: 700;")
+        amount.setMaximum(999999999); amount.setDecimals(2); amount.setValue(balance)
+        amount.setFixedHeight(46); amount.setStyleSheet("font-size: 16px; font-weight: 700;")
         v.addWidget(amount)
 
-        nl = QLabel("NOTE (optional)")
-        nl.setStyleSheet("color: #334155; font-size: 12px; font-weight: 700;")
-        v.addWidget(nl)
-
-        note = QLineEdit()
-        note.setPlaceholderText("e.g., Cash received, partial payment")
-        note.setFixedHeight(42)
+        v.addWidget(QLabel("NOTE (optional)"))
+        note = QLineEdit(); note.setPlaceholderText("e.g., Cash received"); note.setFixedHeight(42)
         v.addWidget(note)
 
-        b = QPushButton("Receive Payment")
-        b.setProperty("variant", "success")
-        b.setFixedHeight(50)
-        b.setStyleSheet("font-size: 14px; font-weight: 800;")
-        b.clicked.connect(d.accept)
-        v.addWidget(b)
+        b = QPushButton("Receive Payment"); b.setFixedHeight(50)
+        b.clicked.connect(d.accept); v.addWidget(b)
 
         if d.exec() != QDialog.Accepted:
             return
-
         pay_amt = amount.value()
         if pay_amt <= 0:
-            QMessageBox.warning(self, "Invalid", "Amount must be greater than 0.")
+            QMessageBox.warning(self, "Invalid", "Amount must be > 0.")
             return
 
         with SessionLocal() as s:
             c = s.get(CreditCustomer, cid)
-            if not c:
-                return
             c.total_paid += pay_amt
             c.balance = max(0, c.total_credit - c.total_paid)
-
             s.add(CreditTransaction(
-                customer_id=cid,
-                type="payment",
-                amount=pay_amt,
+                customer_id=cid, type="payment", amount=pay_amt,
                 description=note.text().strip() or "Payment received",
                 balance_after=c.balance,
             ))
-            new_balance = c.balance
+            new_bal = c.balance
             s.commit()
 
         QMessageBox.information(self, "Payment Received",
-                                f"Payment of {money(pay_amt)} recorded.\n\nNew Balance: {money(new_balance)}")
+                                f"Recorded {money(pay_amt)}.\n\nNew Balance: {money(new_bal)}")
         self.load()
 
 
 # =========================================================
-# DASHBOARD
+# DASHBOARD (PROFESSIONAL with CHARTS)
 # =========================================================
 class DashboardWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.l = QVBoxLayout(self)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setStyleSheet("QScrollArea { border: none; background: #F1F5F9; }")
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self.scroll)
+
+        self.container = QWidget()
+        self.container.setStyleSheet("background: #F1F5F9;")
+        self.scroll.setWidget(self.container)
+
+        self.l = QVBoxLayout(self.container)
         self.l.setContentsMargins(28, 26, 28, 26)
         self.l.setSpacing(20)
+
         self.refresh()
 
     def refresh(self):
@@ -2608,19 +2889,15 @@ class DashboardWidget(QWidget):
             elif item.layout():
                 self._clear(item.layout())
 
+        # ===== HEADER =====
         header = QHBoxLayout()
-        header.setSpacing(12)
-
-        title_box = QVBoxLayout()
-        title_box.setSpacing(2)
+        title_box = QVBoxLayout(); title_box.setSpacing(2)
         title = QLabel("Dashboard")
         title.setStyleSheet("font-size: 26px; font-weight: 900; color: #0F172A; letter-spacing: -0.5px;")
         title_box.addWidget(title)
-
         sub = QLabel(datetime.now().strftime("%A, %d %B %Y"))
         sub.setStyleSheet("color: #64748B; font-size: 13px;")
         title_box.addWidget(sub)
-
         header.addLayout(title_box)
         header.addStretch()
 
@@ -2630,17 +2907,21 @@ class DashboardWidget(QWidget):
         refresh_btn.setCursor(Qt.PointingHandCursor)
         refresh_btn.clicked.connect(self.refresh)
         header.addWidget(refresh_btn)
-
         self.l.addLayout(header)
 
+        # ===== DATA =====
         with SessionLocal() as s:
             today = date.today()
             today_start = datetime.combine(today, datetime.min.time())
 
             today_sales = s.query(Sale).filter(Sale.created_at >= today_start).all()
+            week_start = today_start - timedelta(days=today.weekday())
+            week_sales = s.query(Sale).filter(Sale.created_at >= week_start).all()
+
             total_products = s.query(Product).count()
             low_stock = s.query(Product).filter(
-                Product.stock_quantity <= Product.minimum_stock
+                Product.stock_quantity <= Product.minimum_stock,
+                Product.stock_quantity > 0
             ).count()
             out_of_stock = s.query(Product).filter(Product.stock_quantity <= 0).count()
 
@@ -2648,166 +2929,226 @@ class DashboardWidget(QWidget):
             total_udhaar = sum(c.balance for c in credit_customers)
             pending_customers = sum(1 for c in credit_customers if c.balance > 0)
 
-            week_start = today_start - timedelta(days=today.weekday())
-            week_sales = s.query(Sale).filter(Sale.created_at >= week_start).all()
+            # Last 7 days sales
+            last_7_days = []
+            for i in range(6, -1, -1):
+                d = today - timedelta(days=i)
+                d_start = datetime.combine(d, datetime.min.time())
+                d_end = d_start + timedelta(days=1)
+                day_sales = s.query(Sale).filter(
+                    Sale.created_at >= d_start,
+                    Sale.created_at < d_end
+                ).all()
+                last_7_days.append((d.strftime("%a"), sum(x.total for x in day_sales)))
 
+            # Top products (last 30 days)
+            from sqlalchemy import func
+            month_start = today_start - timedelta(days=30)
+            top_products_query = s.query(
+                SaleItem.product_name,
+                func.sum(SaleItem.subtotal).label("total")
+            ).join(Sale, SaleItem.sale_id == Sale.id).filter(
+                Sale.created_at >= month_start
+            ).group_by(SaleItem.product_name).order_by(func.sum(SaleItem.subtotal).desc()).limit(6).all()
+            top_products = [(name[:18], float(total)) for name, total in top_products_query]
+
+            # Category distribution
+            cat_dist = s.query(
+                Category.name,
+                func.count(Product.id)
+            ).join(Product, Product.category_id == Category.id).group_by(Category.name).all()
+            cat_data = [(name, count) for name, count in cat_dist]
+
+        # ===== STAT CARDS =====
         grid = QGridLayout()
         grid.setSpacing(16)
 
         stats = [
-            {
-                "title": "Today's Sales",
-                "value": money(sum(x.total for x in today_sales)),
-                "icon": "💰",
-                "color": "#4F46E5",
-                "subtitle": f"{len(today_sales)} transactions"
-            },
-            {
-                "title": "This Week",
-                "value": money(sum(x.total for x in week_sales)),
-                "icon": "📈",
-                "color": "#059669",
-                "subtitle": f"{len(week_sales)} transactions"
-            },
-            {
-                "title": "Total Products",
-                "value": str(total_products),
-                "icon": "📦",
-                "color": "#D97706",
-                "subtitle": f"{low_stock} low • {out_of_stock} out"
-            },
-            {
-                "title": "Udhaar Balance",
-                "value": money(total_udhaar),
-                "icon": "💳",
-                "color": "#DC2626",
-                "subtitle": f"{pending_customers} pending"
-            },
+            ("Today's Sales", money(sum(x.total for x in today_sales)),
+             "💰", "#4F46E5", f"{len(today_sales)} transactions"),
+            ("This Week", money(sum(x.total for x in week_sales)),
+             "📈", "#059669", f"{len(week_sales)} transactions"),
+            ("Total Products", str(total_products),
+             "📦", "#D97706", f"{low_stock} low • {out_of_stock} out"),
+            ("Udhaar Balance", money(total_udhaar),
+             "💳", "#DC2626", f"{pending_customers} pending"),
         ]
-
-        for i, st in enumerate(stats):
-            card = StatCard(
-                st["title"], st["value"],
-                st["icon"], st["color"], st["subtitle"]
-            )
+        for i, (t, v, ic, c, sub) in enumerate(stats):
+            card = StatCard(t, v, ic, c, sub)
             card.setMinimumHeight(140)
             grid.addWidget(card, 0, i)
-
         self.l.addLayout(grid)
 
+        # ===== CHARTS ROW =====
+        charts_row = QHBoxLayout()
+        charts_row.setSpacing(16)
+
+        # Bar chart: Last 7 days
+        bar_card = self._make_chart_card(
+            "📊  Sales — Last 7 Days",
+            "Daily revenue breakdown"
+        )
+        bar_chart = BarChartWidget(last_7_days)
+        bar_chart.setMinimumHeight(280)
+        bar_card.layout().addWidget(bar_chart)
+        charts_row.addWidget(bar_card, 3)
+
+        # Donut chart: Categories
+        donut_card = self._make_chart_card(
+            "🍩  Products by Category",
+            "Category-wise product count"
+        )
+        donut_chart = DonutChartWidget(cat_data)
+        donut_chart.setMinimumHeight(280)
+        donut_card.layout().addWidget(donut_chart)
+        charts_row.addWidget(donut_card, 2)
+
+        self.l.addLayout(charts_row)
+
+        # ===== BOTTOM ROW: Recent Sales + Top Products + Alerts =====
         bottom = QHBoxLayout()
         bottom.setSpacing(16)
 
-        recent_box = QFrame()
-        recent_box.setStyleSheet("""
-            QFrame {
-                background: #FFFFFF;
-                border: 1px solid #E8ECF1;
-                border-radius: 14px;
-            }
-        """)
-        rb = QVBoxLayout(recent_box)
-        rb.setContentsMargins(20, 18, 20, 18)
-        rb.setSpacing(12)
-
-        recent_title = QLabel("🕐  Recent Transactions")
-        recent_title.setStyleSheet("font-size: 14px; font-weight: 800; color: #0F172A; background: transparent;")
-        rb.addWidget(recent_title)
-
+        # Recent Transactions
+        recent_card = self._make_chart_card("🕐  Recent Transactions", "Latest 5 sales")
         with SessionLocal() as s:
             recent = s.query(Sale).order_by(Sale.created_at.desc()).limit(5).all()
-            recent_data = [
-                (sale.invoice, sale.created_at, sale.total, sale.payment_method)
-                for sale in recent
-            ]
+            recent_data = [(r.invoice, r.created_at, r.total, r.payment_method) for r in recent]
 
         if not recent_data:
             empty = QLabel("No transactions yet")
             empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #94A3B8; font-size: 12px; padding: 30px; background: transparent;")
-            rb.addWidget(empty)
+            empty.setStyleSheet("color: #94A3B8; font-size: 12px; padding: 30px;")
+            recent_card.layout().addWidget(empty)
         else:
             for inv, dt, total, method in recent_data:
                 row = QFrame()
                 row.setStyleSheet("background: #F8FAFC; border-radius: 8px;")
                 rl = QHBoxLayout(row)
-                rl.setContentsMargins(12, 10, 12, 10)
-                rl.setSpacing(10)
+                rl.setContentsMargins(12, 10, 12, 10); rl.setSpacing(8)
 
-                inv_lbl = QLabel(inv.replace("INV-", "#"))
-                inv_lbl.setStyleSheet("color: #4F46E5; font-size: 12px; font-weight: 800; background: transparent;")
+                inv_lbl = QLabel(inv.replace("INV-", "#")[:12])
+                inv_lbl.setStyleSheet("color: #4F46E5; font-size: 12px; font-weight: 800;")
                 inv_lbl.setFixedWidth(90)
                 rl.addWidget(inv_lbl)
 
                 time_lbl = QLabel(dt.strftime("%I:%M %p"))
-                time_lbl.setStyleSheet("color: #64748B; font-size: 11px; background: transparent;")
+                time_lbl.setStyleSheet("color: #64748B; font-size: 11px;")
                 rl.addWidget(time_lbl)
                 rl.addStretch()
 
                 amt_lbl = QLabel(money(total))
-                amt_lbl.setStyleSheet("color: #0F172A; font-size: 13px; font-weight: 800; background: transparent;")
+                amt_lbl.setStyleSheet("color: #0F172A; font-size: 13px; font-weight: 800;")
                 rl.addWidget(amt_lbl)
 
-                rb.addWidget(row)
+                recent_card.layout().addWidget(row)
 
-        bottom.addWidget(recent_box, 1)
+        recent_card.layout().addStretch()
+        bottom.addWidget(recent_card, 1)
 
-        alert_box = QFrame()
-        alert_box.setStyleSheet("""
+        # Top Products
+        top_card = self._make_chart_card("🏆  Top Selling Products", "Last 30 days revenue")
+        if not top_products:
+            empty = QLabel("No sales data yet")
+            empty.setAlignment(Qt.AlignCenter)
+            empty.setStyleSheet("color: #94A3B8; font-size: 12px; padding: 30px;")
+            top_card.layout().addWidget(empty)
+        else:
+            for i, (name, total) in enumerate(top_products):
+                row = QFrame()
+                row.setStyleSheet("background: #F8FAFC; border-radius: 8px;")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(12, 10, 12, 10); rl.setSpacing(8)
+
+                rank = QLabel(f"#{i+1}")
+                rank.setStyleSheet("""
+                    background: #4F46E5; color: white;
+                    border-radius: 10px; padding: 2px 8px;
+                    font-size: 11px; font-weight: 800;
+                """)
+                rank.setFixedWidth(36)
+                rank.setAlignment(Qt.AlignCenter)
+                rl.addWidget(rank)
+
+                name_lbl = QLabel(name)
+                name_lbl.setStyleSheet("color: #0F172A; font-size: 12px; font-weight: 700;")
+                rl.addWidget(name_lbl, 1)
+
+                amt_lbl = QLabel(money(total))
+                amt_lbl.setStyleSheet("color: #059669; font-size: 13px; font-weight: 800;")
+                rl.addWidget(amt_lbl)
+
+                top_card.layout().addWidget(row)
+        top_card.layout().addStretch()
+        bottom.addWidget(top_card, 1)
+
+        # Alerts
+        alert_card = self._make_chart_card("⚠️  Stock Alerts", "Low & out of stock")
+        with SessionLocal() as s:
+            low_items = s.query(Product).filter(
+                Product.stock_quantity <= Product.minimum_stock,
+                Product.stock_quantity > 0
+            ).order_by(Product.stock_quantity).limit(4).all()
+            out_items = s.query(Product).filter(
+                Product.stock_quantity <= 0
+            ).limit(4).all()
+
+        alerts = [(p.name, p.stock_quantity, True) for p in out_items] + \
+                 [(p.name, p.stock_quantity, False) for p in low_items]
+
+        if not alerts:
+            ok = QLabel("✓ All products well stocked")
+            ok.setAlignment(Qt.AlignCenter)
+            ok.setStyleSheet("color: #059669; font-size: 12px; padding: 30px; font-weight: 600;")
+            alert_card.layout().addWidget(ok)
+        else:
+            for name, stock, is_out in alerts[:6]:
+                row = QFrame()
+                bg = "#FEE2E2" if is_out else "#FEF3C7"
+                row.setStyleSheet(f"background: {bg}; border-radius: 8px;")
+                rl = QHBoxLayout(row)
+                rl.setContentsMargins(12, 10, 12, 10); rl.setSpacing(8)
+
+                name_lbl = QLabel(name[:20])
+                name_lbl.setStyleSheet("color: #0F172A; font-size: 12px; font-weight: 700;")
+                rl.addWidget(name_lbl, 1)
+
+                stock_lbl = QLabel("OUT" if is_out else f"{stock:.0f} left")
+                stock_lbl.setStyleSheet(f"""
+                    color: {'#DC2626' if is_out else '#D97706'};
+                    font-size: 11px; font-weight: 800;
+                """)
+                rl.addWidget(stock_lbl)
+
+                alert_card.layout().addWidget(row)
+        alert_card.layout().addStretch()
+        bottom.addWidget(alert_card, 1)
+
+        self.l.addLayout(bottom)
+        self.l.addStretch()
+
+    def _make_chart_card(self, title, subtitle):
+        card = QFrame()
+        card.setStyleSheet("""
             QFrame {
                 background: #FFFFFF;
                 border: 1px solid #E8ECF1;
                 border-radius: 14px;
             }
         """)
-        ab = QVBoxLayout(alert_box)
-        ab.setContentsMargins(20, 18, 20, 18)
-        ab.setSpacing(12)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
 
-        alert_title = QLabel("⚠  Low Stock Alerts")
-        alert_title.setStyleSheet("font-size: 14px; font-weight: 800; color: #0F172A; background: transparent;")
-        ab.addWidget(alert_title)
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet("font-size: 14px; font-weight: 800; color: #0F172A; background: transparent;")
+        layout.addWidget(title_lbl)
 
-        with SessionLocal() as s:
-            low_products = s.query(Product).filter(
-                Product.stock_quantity <= Product.minimum_stock,
-                Product.stock_quantity > 0
-            ).order_by(Product.stock_quantity).limit(5).all()
+        sub_lbl = QLabel(subtitle)
+        sub_lbl.setStyleSheet("color: #64748B; font-size: 11px; background: transparent;")
+        layout.addWidget(sub_lbl)
 
-            out_products = s.query(Product).filter(
-                Product.stock_quantity <= 0
-            ).limit(5).all()
-
-        if not low_products and not out_products:
-            empty = QLabel("✓ All products well stocked")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setStyleSheet("color: #059669; font-size: 12px; padding: 30px; background: transparent; font-weight: 600;")
-            ab.addWidget(empty)
-        else:
-            for p in (out_products + low_products)[:6]:
-                row = QFrame()
-                is_out = p.stock_quantity <= 0
-                bg = "#FEE2E2" if is_out else "#FEF3C7"
-                row.setStyleSheet(f"background: {bg}; border-radius: 8px;")
-                rl = QHBoxLayout(row)
-                rl.setContentsMargins(12, 10, 12, 10)
-                rl.setSpacing(10)
-
-                name_lbl = QLabel(p.name[:22])
-                name_lbl.setStyleSheet("color: #0F172A; font-size: 12px; font-weight: 700; background: transparent;")
-                rl.addWidget(name_lbl, 1)
-
-                stock_lbl = QLabel("OUT" if is_out else f"{p.stock_quantity:.0f} left")
-                color = "#DC2626" if is_out else "#D97706"
-                stock_lbl.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: 800; background: transparent;")
-                rl.addWidget(stock_lbl)
-
-                ab.addWidget(row)
-
-        bottom.addWidget(alert_box, 1)
-
-        self.l.addLayout(bottom)
-        self.l.addStretch()
+        return card
 
     def _clear(self, layout):
         while layout.count():
@@ -2819,7 +3160,7 @@ class DashboardWidget(QWidget):
 
 
 # =========================================================
-# MAIN WINDOW
+# MAIN WINDOW (with role-based permissions)
 # =========================================================
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -2829,8 +3170,9 @@ class MainWindow(QMainWindow):
         if login.exec() != QDialog.Accepted:
             raise SystemExit
         self.user = login.user
+        self.role = self.user[2]
 
-        self.setWindowTitle("Retail POS")
+        self.setWindowTitle(f"Retail POS — {self.user[1]} ({self.role})")
         self.resize(1460, 900)
         self.setMinimumSize(1200, 720)
 
@@ -2840,7 +3182,7 @@ class MainWindow(QMainWindow):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # TOP BAR
+        # ============ TOP BAR ============
         top = QFrame()
         top.setObjectName("TopBar")
         top.setStyleSheet(TOPBAR_STYLE)
@@ -2853,6 +3195,10 @@ class MainWindow(QMainWindow):
         self.search = LiveSearchBar()
         self.search.product_selected.connect(self._on_product_selected)
         self.search.setStyleSheet(TOPBAR_STYLE.replace("QLineEdit#SearchBar", "LiveSearchBar"))
+        # Only allow search if POS accessible
+        if not has_permission(self.role, "pos"):
+            self.search.setDisabled(True)
+            self.search.setPlaceholderText("Search disabled for your role")
         tl.addWidget(self.search, 1)
 
         notif = QPushButton("🔔")
@@ -2870,7 +3216,7 @@ class MainWindow(QMainWindow):
 
         root.addWidget(top)
 
-        # BODY
+        # ============ BODY ============
         body = QHBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(0)
@@ -2897,6 +3243,7 @@ class MainWindow(QMainWindow):
 
         sl.addSpacing(20)
 
+        # User card
         user_card = QFrame()
         user_card.setObjectName("UserCard")
         user_card.setStyleSheet(SIDEBAR_STYLE)
@@ -2916,7 +3263,7 @@ class MainWindow(QMainWindow):
         u_name = QLabel(self.user[1])
         u_name.setObjectName("UserName")
         u_name.setStyleSheet(SIDEBAR_STYLE)
-        u_role = QLabel(self.user[2])
+        u_role = QLabel(self.role)
         u_role.setObjectName("UserRole")
         u_role.setStyleSheet(SIDEBAR_STYLE)
         u_info.addWidget(u_name)
@@ -2933,26 +3280,33 @@ class MainWindow(QMainWindow):
         sl.addWidget(nav_label)
 
         self.stack = QStackedWidget()
-        self.dashboard = DashboardWidget()
-        self.pos = POSWidget(self.user, self.dashboard.refresh)
-        self.products = ProductsWidget()
-        self.inventory = InventoryWidget()
-        self.sales = SalesWidget()
-        self.credits = CreditsWidget()
 
-        pages = [
-            ("🏠   Dashboard", self.dashboard),
-            ("🛒   POS", self.pos),
-            ("📦   Products", self.products),
-            ("📊   Inventory", self.inventory),
-            ("🧾   Sales", self.sales),
-            ("💳   Udhaar / Credits", self.credits),
-        ]
+        # Instantiate pages (will be filtered by role)
+        self.dashboard = DashboardWidget() if has_permission(self.role, "dashboard") else None
+        self.pos = POSWidget(self.user, self.dashboard.refresh if self.dashboard else None) if has_permission(self.role, "pos") else None
+        self.products = ProductsWidget() if has_permission(self.role, "products") else None
+        self.inventory = InventoryWidget() if has_permission(self.role, "inventory") else None
+        self.sales = SalesWidget() if has_permission(self.role, "sales") else None
+        self.credits = CreditsWidget() if has_permission(self.role, "credits") else None
+        self.users = UsersWidget() if has_permission(self.role, "users") else None
 
         self.nav_group = QButtonGroup(self)
         self.nav_group.setExclusive(True)
 
-        for name, page in pages:
+        pages_config = [
+            ("dashboard", "🏠   Dashboard", self.dashboard),
+            ("pos", "🛒   POS", self.pos),
+            ("products", "📦   Products", self.products),
+            ("inventory", "📊   Inventory", self.inventory),
+            ("sales", "🧾   Sales", self.sales),
+            ("credits", "💳   Udhaar / Credits", self.credits),
+            ("users", "👥   Users", self.users),
+        ]
+
+        first_btn = None
+        for key, name, page in pages_config:
+            if page is None:
+                continue
             b = QPushButton(name)
             b.setObjectName("NavButton")
             b.setStyleSheet(SIDEBAR_STYLE)
@@ -2963,9 +3317,18 @@ class MainWindow(QMainWindow):
             self.nav_group.addButton(b)
             sl.addWidget(b)
             self.stack.addWidget(page)
+            if first_btn is None:
+                first_btn = b
 
-        self.nav_group.buttons()[1].setChecked(True)
-        self.stack.setCurrentWidget(self.pos)
+        # Default page
+        if first_btn:
+            first_btn.setChecked(True)
+            if self.pos is not None:
+                self.stack.setCurrentWidget(self.pos)
+            elif self.dashboard is not None:
+                self.stack.setCurrentWidget(self.dashboard)
+            elif self.credits is not None:
+                self.stack.setCurrentWidget(self.credits)
 
         sl.addStretch()
 
@@ -2974,7 +3337,7 @@ class MainWindow(QMainWindow):
         bottom_label.setStyleSheet(SIDEBAR_STYLE)
         sl.addWidget(bottom_label)
 
-        if self.user[2] == "Admin":
+        if has_permission(self.role, "backup"):
             backup = QPushButton("💾   Backup")
             backup.setObjectName("NavButton")
             backup.setStyleSheet(SIDEBAR_STYLE)
@@ -3000,12 +3363,20 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(p)
         if hasattr(p, "load"):
             p.load()
-        if p is self.dashboard:
+        if p is self.dashboard and p is not None:
             p.refresh()
 
     def _on_product_selected(self, pid):
+        if self.pos is None:
+            QMessageBox.warning(self, "Access Denied",
+                                "You don't have permission to use POS.")
+            return
         self.stack.setCurrentWidget(self.pos)
-        self.nav_group.buttons()[1].setChecked(True)
+        # Check the POS nav button
+        for btn in self.nav_group.buttons():
+            if "POS" in btn.text():
+                btn.setChecked(True)
+                break
         self.pos.add_product(pid)
 
     def backup(self):
@@ -3016,4 +3387,3 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Backup Complete", f"Saved to:\n{name}")
         except Exception as e:
             QMessageBox.critical(self, "Backup Failed", str(e))
-            
